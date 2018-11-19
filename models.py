@@ -4,6 +4,14 @@ import math
 from lib.nn import SynchronizedBatchNorm2d
 
 
+class NovelViewHomography(nn.Module):
+    def __init__(self):
+        super(NovelViewHomography, self).__init__()
+
+    def forward(self, x):
+        return x
+    
+
 class ModelBuilder():
     def build_encoder(self, arch='resnet', weights=''):
         if arch == 'resnet':
@@ -13,9 +21,9 @@ class ModelBuilder():
                 torch.load(weights, map_location=lambda storage, loc: storage))
         return net_encoder
 
-    def build_decoder(self, arch='ppm', num_class=19, use_softmax=True, weights=''):
+    def build_decoder(self, arch='ppm', num_class=19, num_plane=100, use_softmax=True, weights=''):
         if arch == 'c1':
-            net_decoder = C1Decoder(num_class, use_softmax)
+            net_decoder = C1Decoder(num_class, num_plane, use_softmax)
         elif arch == 'ppm':
             net_decoder = PPMDecoder(num_class, use_softmax)
         if len(weights) > 0:
@@ -89,25 +97,6 @@ class ResnetEncoder(nn.Module):
         return x
 
 
-class C1Decoder(nn.Module):
-    def __init__(self, num_class=19, use_softmax=True):
-        super(C1Decoder, self).__init__()
-        self.use_softmax = use_softmax
-
-        # last conv
-        self.conv_last = nn.Conv2d(512, num_class, 1, 1, 0)
-
-    def forward(self, x):
-        input_size = x.size()
-        x = self.conv_last(x)
-        x = nn.functional.upsample(x, size=(input_size[2]*8, input_size[3]*8), mode='bilinear')
-
-        if self.use_softmax:
-            x = nn.functional.log_softmax(x, dim=1)
-
-        return x
-
-
 class PPMDecoder(nn.Module):
     def __init__(self, num_class=19, use_softmax=True, pool_scales=(1, 2, 3, 6)):
         super(PPMDecoder, self).__init__()
@@ -144,6 +133,28 @@ class PPMDecoder(nn.Module):
         x = self.conv_final(psp_out)
         x = nn.functional.upsample(x, size=(input_size[2]*8, input_size[3]*8), mode='bilinear')
 
+        if self.use_softmax:
+            x = nn.functional.log_softmax(x, dim=1)
+
+        return x
+
+
+class C1Decoder(nn.Module):
+    def __init__(self, num_class = 19, num_plane = 100, use_softmax=False):
+        super(C1Decoder, self).__init__()
+        self.use_softmax = use_softmax
+        
+        self.avgpool = nn.AvgPool2d(8, stride=8)
+        
+        # last conv
+        self.conv_last = nn.Conv2d(512 + num_class, num_plane, 1, 1, 0)
+
+    def forward(self, x, probs):
+        input_size = x.size()
+        probs = self.avgpool(probs)
+        x = self.conv_last(torch.cat([x,probs],1))
+        
+        x = nn.functional.upsample(x, size=(input_size[2]*8, input_size[3]*8), mode='bilinear')
         if self.use_softmax:
             x = nn.functional.log_softmax(x, dim=1)
 

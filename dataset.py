@@ -60,19 +60,6 @@ def make_CityScapes(mode, root):
     return items
 
 
-def make_BDD(mode, root):
-    mask_path = os.path.join(root, 'seg_maps', 'labels', mode)
-    mask_postfix = '_train_id.png'
-    img_path = os.path.join(root, 'images', '10k', mode)
-    img_postfix = '.jpg'
-    items = []
-    filenames = [name.split(img_postfix)[0] for name in os.listdir(img_path)]
-    for it in filenames:
-        item = (os.path.join(img_path, it + img_postfix), os.path.join(mask_path, it + mask_postfix))
-        items.append(item)
-    return items
-
-
 class GTA(torchdata.Dataset):
     def __init__(self, root, cropSize=720, ignore_label=-1, max_sample=-1, is_train=1):
         self.list_sample = make_GTA(root)
@@ -96,14 +83,6 @@ class GTA(torchdata.Dataset):
         num_sample = len(self.list_sample)
         assert num_sample > 0
         print('# samples: {}'.format(num_sample))
-    
-    def _add_xy_index_channels(self, img):
-        h_s = img.shape[0]
-        w_s = img.shape[1]
-        c_y_index = np.expand_dims(np.tile(np.arange(h_s),w_s).reshape(w_s,h_s).T,2)/(y_dim-1)
-        c_x_index = np.tile(np.arange(w_s),h_s).T.reshape(h_s,w_s,1)/(x_dim-1)
-        img_extended = np.concatenate([img,c_y_index,c_x_index],2).copy()
-        return img_extended
     
     def _scale_and_crop(self, img, seg, cropSize, is_train):
         h_s, w_s = 720, 1312
@@ -140,9 +119,6 @@ class GTA(torchdata.Dataset):
         for k, v in self.id_to_trainid.items():
             seg_copy[seg == k] = v
         seg = seg_copy
-        
-        # add spatial features
-        img = self._add_xy_index_channels(img)
         
         # random scale, crop, flip
         img, seg = self._scale_and_crop(img, seg,
@@ -190,14 +166,6 @@ class CityScapes(torchdata.Dataset):
         assert num_sample > 0
         print('# samples: {}'.format(num_sample))
     
-    def _add_xy_index_channels(self, img):
-        h_s = img.shape[0]
-        w_s = img.shape[1]
-        c_y_index = np.expand_dims(np.tile(np.arange(h_s),w_s).reshape(w_s,h_s).T,2)/(y_dim-1)
-        c_x_index = np.tile(np.arange(w_s),h_s).T.reshape(h_s,w_s,1)/(x_dim-1)
-        img_extended = np.concatenate([img,c_y_index,c_x_index],2).copy()
-        return img_extended
-    
     def _scale_and_crop(self, img, seg, cropSize, is_train):
         h_s, w_s = 720, 1440
         img_scale = imresize(img, (h_s, w_s), interp='bilinear')
@@ -233,9 +201,6 @@ class CityScapes(torchdata.Dataset):
         for k, v in self.id_to_trainid.items():
             seg_copy[seg == k] = v
         seg = seg_copy
-
-        # add spatial features
-        img = self._add_xy_index_channels(img)
         
         # random scale, crop, flip
         img, seg = self._scale_and_crop(img, seg,
@@ -254,115 +219,6 @@ class CityScapes(torchdata.Dataset):
         # normalize
         image = self.img_transform(image)
 
-        return image, segmentation.long(), img_path
-
-    def __len__(self):
-        return len(self.list_sample)
-
-
-class BDD(torchdata.Dataset):
-    def __init__(self, mode, root, cropSize=720, ignore_label=-1, max_sample=-1, is_train=1):
-        self.list_sample = make_BDD(mode, root)
-        self.mode = mode
-        self.cropSize = cropSize
-        self.is_train = is_train
-        self.img_transform = transforms.Compose([
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225])])
-        self.id_to_trainid = {255:ignore_label}
-        if self.is_train:
-            random.shuffle(self.list_sample)
-        if max_sample > 0:
-            self.list_sample = self.list_sample[0:max_sample]
-        num_sample = len(self.list_sample)
-        assert num_sample > 0
-        print('# samples: {}'.format(num_sample))
-    
-    def _add_xy_index_channels(self, img):
-        h_s = img.shape[0]
-        w_s = img.shape[1]
-        c_y_index = np.expand_dims(np.tile(np.arange(h_s),w_s).reshape(w_s,h_s).T,2)/(y_dim-1)
-        c_x_index = np.tile(np.arange(w_s),h_s).T.reshape(h_s,w_s,1)/(x_dim-1)
-        img_extended = np.concatenate([img,c_y_index,c_x_index],2).copy()
-        return img_extended
-    
-    def _scale_and_crop(self, img, seg, cropSize, is_train):
-        h_s, w_s = 720, 1280
-        if img.shape[0] == h_s and img.shape[1] == w_s:
-            img_scale = img
-            seg_scale = seg
-        else:
-            img_scale = imresize(img, (h_s, w_s), interp='bilinear')
-            seg = (seg + 1).astype(np.uint8)
-            seg_scale = imresize(seg, (h_s, w_s), interp='nearest')
-            seg_scale = seg_scale.astype(np.int) - 1
-
-        if is_train:
-            # random crop
-            x1 = random.randint(0, w_s - cropSize)
-            y1 = random.randint(0, h_s - cropSize)
-            img_crop = img_scale[y1: y1 + cropSize, x1: x1 + cropSize, :]
-            seg_crop = seg_scale[y1: y1 + cropSize, x1: x1 + cropSize]
-        else:
-            # no crop
-            img_crop = img_scale
-            seg_crop = seg_scale
-
-        return img_crop, seg_crop
-
-    def _flip(self, img, seg):
-        img_flip = img[:, ::-1, :].copy()
-        seg_flip = seg[:, ::-1].copy()
-        return img_flip, seg_flip
-
-    def selfcheck(self, list_sample):
-        counter = 0
-        filtered_list = []
-        for i in tqdm(range(len(list_sample))):
-            img_path, seg_path = self.list_sample[i]
-            img = imread(img_path, mode='RGB')
-            seg = imread(seg_path, mode='P')
-            if img.shape[0] != seg.shape[0] or img.shape[1] != seg.shape[1]:
-                counter += 1
-            else:
-                filtered_list.append((img_path, seg_path))
-        print('{} ignored samples (mismatch in input and label)'.format(counter))
-
-        return filtered_list
-
-    def __getitem__(self, index):
-        img_path, seg_path = self.list_sample[index]
-
-        img = imread(img_path, mode='RGB')
-        seg = imread(seg_path, mode='P')
-
-        seg_copy = seg.copy().astype(np.int)
-        for k, v in self.id_to_trainid.items():
-            seg_copy[seg == k] = v
-        seg = seg_copy
-        
-        # add spatial features
-        img = self._add_xy_index_channels(img)
-        
-        # random scale, crop, flip
-        img, seg = self._scale_and_crop(img, seg,
-                                        self.cropSize, self.is_train)
-        if self.is_train and random.choice([-1, 1]) > 0:
-            img, seg = self._flip(img, seg)
-
-        # image to float
-        img = img.astype(np.float32) / 255.
-        img = img.transpose((2, 0, 1))
-
-        # to torch tensor
-        image = torch.from_numpy(img)
-        segmentation = torch.from_numpy(seg)
-
-        # normalize
-        image = self.img_transform(image)
-
-        if image.shape[1] != segmentation.shape[0] or image.shape[2] != segmentation.shape[1]:
-            print('test')
         return image, segmentation.long(), img_path
 
     def __len__(self):

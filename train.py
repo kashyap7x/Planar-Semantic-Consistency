@@ -12,8 +12,8 @@ from torch.autograd import Variable
 from scipy.io import loadmat
 from scipy.misc import imresize, imsave
 # Our libs
-from dataset import GTA, CityScapes, BDD, trainID2Class
-from models import ModelBuilder
+from dataset import GTA, CityScapes, trainID2Class
+from models import ModelBuilder, NovelViewHomography
 from utils import AverageMeter, colorEncode, accuracy, make_variable, intersectionAndUnion
 
 import matplotlib
@@ -22,32 +22,48 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 
-def forward_with_loss(nets, batch_data, is_train=True):
-    (net_encoder, net_decoder, crit) = nets
-    (imgs, segs, infos) = batch_data
+def forward_with_loss(nets, batch_data, use_seg_label=True):
+    (net_encoder, net_decoder_1, net_decoder_2, warp, crit1, crit2) = nets
 
     # feed input data
-    if is_train:
+    if use_seg_label:
+        (imgs, segs, infos) = batch_data
+        
         input_img = Variable(imgs)
         label_seg = Variable(segs)
+            
+        input_img = input_img.cuda()
+        label_seg = label_seg.cuda()
+
+        # forward
+        featuremap = net_encoder(input_img)
+        seg_mask = net_decoder_1(featuremap)
+        
+        err = crit1(seg_mask, label_seg)
+        
+        return seg_mask, err
+        
     else:
-        with torch.no_grad():
-            input_img = Variable(imgs)
-            label_seg = Variable(segs)
+        (imgs, segs, infos) = batch_data
+        
+        input_img = Variable(imgs)
+        label_seg = Variable(segs)
+        
+        input_img = input_img.cuda()
+        label_seg = label_seg.cuda()
 
-    input_img = input_img.cuda()
-    label_seg = label_seg.cuda()
-
-    # forward
-    pred_featuremap = net_decoder(net_encoder(input_img))
-    
-    err = crit(pred_featuremap, label_seg)
-    
-    return pred_featuremap, err
+        # forward
+        featuremap = net_encoder(input_img)
+        seg_mask = net_decoder_1(featuremap)
+        plane_mask = warp(net_decoder_2(featuremap, seg_mask))
+        
+        err = crit2(plane_mask, input_img)
+        
+        return seg_mask, plane_mask, err
 
 
 def visualize(batch_data, pred, args):
-    colors = loadmat('colormap.mat')['colors']
+    colors = loadmat('./colormap.mat')['colors']
     (imgs, segs, infos) = batch_data
     for j in range(len(infos)):
         # get/recover image
@@ -95,7 +111,7 @@ def train(nets, loader, optimizers, history, epoch, args):
             net.zero_grad()
 
         # forward pass
-        pred, err = forward_with_loss(nets, batch_data, is_train=True)
+        pred, _, err = forward_with_loss(nets, batch_data, use_seg_label=False)
 
         # Backward
         err.backward()
@@ -125,17 +141,12 @@ def train(nets, loader, optimizers, history, epoch, args):
             history['train']['acc'].append(acc)
 
 
-def evaluate(nets, loader, loader_2, history, epoch, args):
+def evaluate(nets, loader, history, epoch, args):
     print('Evaluating at {} epochs...'.format(epoch))
     loss_meter = AverageMeter()
     acc_meter = AverageMeter()
     intersection_meter = AverageMeter()
     union_meter = AverageMeter()
-
-    loss_meter_2 = AverageMeter()
-    acc_meter_2 = AverageMeter()
-    intersection_meter_2 = AverageMeter()
-    union_meter_2 = AverageMeter()
 
     # switch to eval mode
     for net in nets:
@@ -143,8 +154,7 @@ def evaluate(nets, loader, loader_2, history, epoch, args):
 
     for i, batch_data in enumerate(loader):
         # forward pass
-        torch.cuda.empty_cache()
-        pred, err = forward_with_loss(nets, batch_data, is_train=False)
+        pred, err = forward_with_loss(nets, batch_data, use_seg_label=True)
         loss_meter.update(err.data.item())
         print('[Eval] iter {}, loss: {}'.format(i, err.data.item()))
 
@@ -164,8 +174,8 @@ def evaluate(nets, loader, loader_2, history, epoch, args):
     for i, _iou in enumerate(iou):
         print('class [{}], IoU: {}'.format(trainID2Class[i], _iou))
 
-    print('[Cityscapes Eval Summary]:')
-    print('Epoch: {}, Loss: {}, Mean IoU: {:.4}, Accuracy: {:.2f}%'
+    print('[Eval Summary]:')
+    print('Epoch: {}, Loss: {}, Mean IoU: {:.4}, Accurarcy: {:.2f}%'
           .format(epoch, loss_meter.average(), iou.mean(), acc_meter.average() * 100))
 
     history['val']['epoch'].append(epoch)
@@ -173,50 +183,16 @@ def evaluate(nets, loader, loader_2, history, epoch, args):
     history['val']['acc'].append(acc_meter.average())
     history['val']['mIoU'].append(iou.mean())
 
-    for i, batch_data in enumerate(loader_2):
-        # forward pass
-        torch.cuda.empty_cache()
-        pred, err = forward_with_loss(nets, batch_data, is_train=False)
-        loss_meter_2.update(err.data.item())
-        print('[Eval] iter {}, loss: {}'.format(i, err.data.item()))
-
-        # calculate accuracy
-        acc, pix = accuracy(batch_data, pred)
-        acc_meter_2.update(acc, pix)
-
-        intersection, union = intersectionAndUnion(batch_data, pred,
-                                                   args.num_class)
-        intersection_meter_2.update(intersection)
-        union_meter_2.update(union)
-
-        # visualization
-        visualize(batch_data, pred, args)
-
-    iou = intersection_meter_2.sum / (union_meter_2.sum + 1e-10)
-    for i, _iou in enumerate(iou):
-        print('class [{}], IoU: {}'.format(trainID2Class[i], _iou))
-
-    print('[BDD Eval Summary]:')
-    print('Epoch: {}, Loss: {}, Mean IoU: {:.4}, Accuracy: {:.2f}%'
-          .format(epoch, loss_meter_2.average(), iou.mean(), acc_meter_2.average() * 100))
-
-    history['val_2']['epoch'].append(epoch)
-    history['val_2']['err'].append(loss_meter.average())
-    history['val_2']['acc'].append(acc_meter.average())
-    history['val_2']['mIoU'].append(iou.mean())
-
     # Plot figure
     if epoch > 0:
+        print('Plotting loss figure...')
         fig = plt.figure()
         plt.plot(np.asarray(history['train']['epoch']),
                  np.log(np.asarray(history['train']['err'])),
-                 color='b', label='gta')
+                 color='b', label='training')
         plt.plot(np.asarray(history['val']['epoch']),
                  np.log(np.asarray(history['val']['err'])),
-                 color='c', label='cityscapes')
-        plt.plot(np.asarray(history['val_2']['epoch']),
-                 np.log(np.asarray(history['val_2']['err'])),
-                 color='g', label='bdd')
+                 color='c', label='validation')
         plt.legend()
         plt.xlabel('Epoch')
         plt.ylabel('Log(loss)')
@@ -225,11 +201,9 @@ def evaluate(nets, loader, loader_2, history, epoch, args):
 
         fig = plt.figure()
         plt.plot(history['train']['epoch'], history['train']['acc'],
-                 color='b', label='gta')
+                 color='b', label='training')
         plt.plot(history['val']['epoch'], history['val']['acc'],
-                 color='c', label='cityscapes')
-        plt.plot(history['val_2']['epoch'], history['val_2']['acc'],
-                 color='g', label='bdd')
+                 color='c', label='validation')
         plt.legend()
         plt.xlabel('Epoch')
         plt.ylabel('Accuracy')
@@ -239,7 +213,7 @@ def evaluate(nets, loader, loader_2, history, epoch, args):
 
 def checkpoint(nets, history, args):
     print('Saving checkpoints...')
-    (net_encoder, net_decoder, crit) = nets
+    (net_encoder, net_decoder_1, net_decoder_2, warp, crit1, crit2) = nets
     suffix_latest = 'latest.pth'
     suffix_best_acc = 'best_acc.pth'
     suffix_best_mIoU = 'best_mIoU.pth'
@@ -247,19 +221,23 @@ def checkpoint(nets, history, args):
 
     if args.num_gpus > 1:
         dict_encoder = net_encoder.module.state_dict()
-        dict_decoder = net_decoder.module.state_dict()
+        dict_decoder_1 = net_decoder_1.module.state_dict()
+        dict_decoder_2 = net_decoder_2.module.state_dict()
 
     else:
         dict_encoder = net_encoder.state_dict()
-        dict_decoder = net_decoder.state_dict()
+        dict_decoder_1 = net_decoder_1.state_dict()
+        dict_decoder_2 = net_decoder_2.state_dict()
 
 
     torch.save(history,
                '{}/history_{}'.format(args.ckpt, suffix_latest))
     torch.save(dict_encoder,
                '{}/encoder_{}'.format(args.ckpt, suffix_latest))
-    torch.save(dict_decoder,
-               '{}/decoder_{}'.format(args.ckpt, suffix_latest))
+    torch.save(dict_decoder_1,
+               '{}/decoder_1_{}'.format(args.ckpt, suffix_latest))
+    torch.save(dict_decoder_2,
+               '{}/decoder_2_{}'.format(args.ckpt, suffix_latest))
 
     cur_err = history['val']['err'][-1]
     cur_acc = history['val']['acc'][-1]
@@ -273,8 +251,10 @@ def checkpoint(nets, history, args):
                    '{}/history_{}'.format(args.ckpt, suffix_best_acc))
         torch.save(dict_encoder,
                    '{}/encoder_{}'.format(args.ckpt, suffix_best_acc))
-        torch.save(dict_decoder,
-                   '{}/decoder_{}'.format(args.ckpt, suffix_best_acc))
+        torch.save(dict_decoder_1,
+                   '{}/decoder_1_{}'.format(args.ckpt, suffix_best_acc))
+        torch.save(dict_decoder_2,
+                   '{}/decoder_2_{}'.format(args.ckpt, suffix_best_acc))
 
     if cur_mIoU > args.best_mIoU:
         # save best accuracy instead
@@ -284,8 +264,10 @@ def checkpoint(nets, history, args):
                    '{}/history_{}'.format(args.ckpt, suffix_best_mIoU))
         torch.save(dict_encoder,
                    '{}/encoder_{}'.format(args.ckpt, suffix_best_mIoU))
-        torch.save(dict_decoder,
-                   '{}/decoder_{}'.format(args.ckpt, suffix_best_mIoU))
+        torch.save(dict_decoder_1,
+                   '{}/decoder_1_{}'.format(args.ckpt, suffix_best_mIoU))
+        torch.save(dict_decoder_2,
+                   '{}/decoder_2_{}'.format(args.ckpt, suffix_best_mIoU))
 
     if cur_err < args.best_err:
         args.best_err = cur_err
@@ -293,24 +275,31 @@ def checkpoint(nets, history, args):
                    '{}/history_{}'.format(args.ckpt, suffix_best_err))
         torch.save(dict_encoder,
                    '{}/encoder_{}'.format(args.ckpt, suffix_best_err))
-        torch.save(dict_decoder,
-                   '{}/decoder_{}'.format(args.ckpt, suffix_best_err))
+        torch.save(dict_decoder_1,
+                   '{}/decoder_1_{}'.format(args.ckpt, suffix_best_err))
+        torch.save(dict_decoder_2,
+                   '{}/decoder_2_{}'.format(args.ckpt, suffix_best_err))
 
 
 def create_optimizers(nets, args):
-    (net_encoder, net_decoder, crit) = nets
+    (net_encoder, net_decoder_1, net_decoder_2, warp, crit1, crit2) = nets
     optimizer_encoder = torch.optim.SGD(
         net_encoder.parameters(),
         lr=args.lr_encoder,
         momentum=args.beta1,
         weight_decay=args.weight_decay)
-    optimizer_decoder = torch.optim.SGD(
-        net_decoder.parameters(),
+    optimizer_decoder_1 = torch.optim.SGD(
+        net_decoder_1.parameters(),
+        lr=args.lr_decoder,
+        momentum=args.beta1,
+        weight_decay=args.weight_decay)
+    optimizer_decoder_2 = torch.optim.SGD(
+        net_decoder_2.parameters(),
         lr=args.lr_decoder,
         momentum=args.beta1,
         weight_decay=args.weight_decay)
 
-    return (optimizer_encoder, optimizer_decoder)
+    return (optimizer_encoder, optimizer_decoder_1, optimizer_decoder_2)
 
 
 def adjust_learning_rate(optimizers, epoch, args):
@@ -318,10 +307,12 @@ def adjust_learning_rate(optimizers, epoch, args):
                  ** args.lr_pow
     args.lr_encoder *= drop_ratio
     args.lr_decoder *= drop_ratio
-    (optimizer_encoder, optimizer_decoder) = optimizers
+    (optimizer_encoder, optimizer_decoder_1, optimizer_decoder_2) = optimizers
     for param_group in optimizer_encoder.param_groups:
         param_group['lr'] = args.lr_encoder
-    for param_group in optimizer_decoder.param_groups:
+    for param_group in optimizer_decoder_1.param_groups:
+        param_group['lr'] = args.lr_decoder
+    for param_group in optimizer_decoder_2.param_groups:
         param_group['lr'] = args.lr_decoder
 
 
@@ -329,19 +320,24 @@ def main(args):
     # Network Builders
     builder = ModelBuilder()
     net_encoder = builder.build_encoder(weights=args.weights_encoder)
-    net_decoder = builder.build_decoder(weights=args.weights_decoder)
+    net_decoder_1 = builder.build_decoder(weights=args.weights_decoder)
+    net_decoder_2 = builder.build_decoder(arch='c1',num_class=args.num_class,
+                                          num_plane=args.num_plane, use_softmax=False,
+                                          weights=args.weights_plane_net)
+    
+    # Warp application module
+    warp = NovelViewHomography()
     
     if args.weighted_class:
-        crit = nn.NLLLoss(ignore_index=-1, weight=args.class_weight)
+        crit1 = nn.NLLLoss(ignore_index=-1, weight=args.class_weight)
     else:
-        crit = nn.NLLLoss(ignore_index=-1)
+        crit1 = nn.NLLLoss(ignore_index=-1)
+    crit2 = nn.MSELoss()
 
     # Dataset and Loader
     dataset_train = GTA(root=args.root_gta, cropSize=args.imgSize, is_train=0)
     dataset_val = CityScapes('val', root=args.root_cityscapes, cropSize=args.imgSize,
                              max_sample=args.num_val, is_train=0)
-    dataset_val_2 = BDD('val', root=args.root_bdd, cropSize=args.imgSize,
-                        max_sample=args.num_val, is_train=0)
 
     loader_train = torch.utils.data.DataLoader(
         dataset_train,
@@ -355,12 +351,7 @@ def main(args):
         shuffle=False,
         num_workers=int(args.workers),
         drop_last=True)
-    loader_val_2 = torch.utils.data.DataLoader(
-        dataset_val_2,
-        batch_size=args.batch_size_eval,
-        shuffle=False,
-        num_workers=int(args.workers),
-        drop_last=True)
+
     args.epoch_iters = int(len(dataset_train) / args.batch_size)
     print('1 Epoch = {} iters'.format(args.epoch_iters))
 
@@ -368,10 +359,12 @@ def main(args):
     if args.num_gpus > 1:
         net_encoder = nn.DataParallel(net_encoder,
                                       device_ids=range(args.num_gpus))
-        net_decoder = nn.DataParallel(net_decoder,
+        net_decoder_1 = nn.DataParallel(net_decoder_1,
+                                        device_ids=range(args.num_gpus))
+        net_decoder_2 = nn.DataParallel(net_decoder_2,
                                         device_ids=range(args.num_gpus))
 
-    nets = (net_encoder, net_decoder, crit)
+    nets = (net_encoder, net_decoder_1, net_decoder_2, warp, crit1, crit2)
     for net in nets:
         net.cuda()
 
@@ -380,16 +373,16 @@ def main(args):
 
     # Main loop
     history = {split: {'epoch': [], 'err': [], 'acc': [], 'mIoU': []}
-               for split in ('train', 'val', 'val_2')}
+               for split in ('train', 'val')}
 
     # optional initial eval
-    evaluate(nets, loader_val, loader_val_2, history, 0, args)
+    evaluate(nets, loader_val, history, 0, args)
     for epoch in range(1, args.num_epoch + 1):
         train(nets, loader_train, optimizers, history, epoch, args)
 
         # Evaluation and visualization
         if epoch % args.eval_epoch == 0:
-            evaluate(nets, loader_val, loader_val_2, history, epoch, args)
+            evaluate(nets, loader_val, history, epoch, args)
 
         # checkpointing
         checkpoint(nets, history, args)
@@ -403,7 +396,7 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # Model related arguments
-    parser.add_argument('--id', default='WhitenedNoise10',
+    parser.add_argument('--id', default='noWarp',
                         help="a name for identifying the experiment")
     parser.add_argument('--weights_encoder',
                         default='/home/selfdriving/kchitta/Style-Randomization/pretrained/encoder_GTA.pth',
@@ -411,14 +404,15 @@ if __name__ == '__main__':
     parser.add_argument('--weights_decoder',
                         default='/home/selfdriving/kchitta/Style-Randomization/pretrained/decoder_1_GTA.pth',
                         help="weights to initialize segmentation branch")
+    parser.add_argument('--weights_plane_net',
+                        default='',
+                        help="weights to initialize reconstruction branch")
 
     # Path related arguments
     parser.add_argument('--root_gta',
                         default='/home/selfdriving/datasets/GTA_full')
     parser.add_argument('--root_cityscapes',
                         default='/home/selfdriving/datasets/cityscapes_full')
-    parser.add_argument('--root_bdd',
-                        default='/home/selfdriving/datasets/bdd100k')
 
     # optimization related arguments
     parser.add_argument('--num_gpus', default=3, type=int,
@@ -435,6 +429,8 @@ if __name__ == '__main__':
     parser.add_argument('--lr_decoder', default=1e-3, type=float, help='LR')
     parser.add_argument('--lr_pow', default=0.9, type=float,
                         help='power in poly to drop LR')
+    parser.add_argument('--beta', default=0.1, type=float,
+                        help='weight of the reconstruction loss')
     parser.add_argument('--beta1', default=0.9, type=float,
                         help='momentum for sgd, beta1 for adam')
     parser.add_argument('--weight_decay', default=1e-4, type=float,
@@ -443,10 +439,12 @@ if __name__ == '__main__':
                         help='fix bn params')
 
     # Data related arguments
-    parser.add_argument('--num_val', default=32, type=int,
+    parser.add_argument('--num_val', default=48, type=int,
                         help='number of images to evaluate')
     parser.add_argument('--num_class', default=19, type=int,
                         help='number of classes')
+    parser.add_argument('--num_plane', default=3, type=int,
+                        help='number of planes')
     parser.add_argument('--workers', default=4, type=int,
                         help='number of data loading workers')
     parser.add_argument('--imgSize', default=720, type=int,
@@ -472,7 +470,7 @@ if __name__ == '__main__':
         print("{:16} {}".format(key, val))
 
     args.batch_size = args.num_gpus * args.batch_size_per_gpu
-    args.batch_size_eval = args.batch_size_per_gpu_eval
+    args.batch_size_eval = args.num_gpus * args.batch_size_per_gpu_eval
 
     # Specify certain arguments
     if args.weighted_class:
@@ -488,6 +486,10 @@ if __name__ == '__main__':
     args.id += '-lr_encoder' + str(args.lr_encoder)
     args.id += '-lr_decoder' + str(args.lr_decoder)
     args.id += '-epoch' + str(args.num_epoch)
+    args.id += '-decay' + str(args.weight_decay)
+    args.id += '-beta' + str(args.beta)
+    if args.weighted_class:
+        args.id += '-weighted' + str(args.enhanced_weight) + str(enhance_class)
 
     print('Model ID: {}'.format(args.id))
 
