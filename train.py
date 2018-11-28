@@ -12,7 +12,7 @@ from torch.autograd import Variable
 from scipy.io import loadmat
 from scipy.misc import imresize, imsave
 # Our libs
-from dataset import GTA, CityScapes, trainID2Class
+from dataset import CityScapes, trainID2Class
 from models import ModelBuilder, NovelViewHomography
 from utils import AverageMeter, colorEncode, accuracy, make_variable, intersectionAndUnion
 
@@ -24,17 +24,18 @@ from tqdm import tqdm
 
 def forward_with_loss(nets, batch_data, use_seg_label=True):
     (net_encoder, net_decoder_1, net_decoder_2, warp, crit1, crit2) = nets
-
+    
+    (imgs, segs, view2, intrinsics, baseline, depth, normals, infos) = batch_data
+    
+    input_img = Variable(imgs)
+    input_img = input_img.cuda()
+    
     # feed input data
-    if use_seg_label:
-        (imgs, segs, infos) = batch_data
+    if use_seg_label: # supervised training
         
-        input_img = Variable(imgs)
         label_seg = Variable(segs)
-            
-        input_img = input_img.cuda()
         label_seg = label_seg.cuda()
-
+        
         # forward
         featuremap = net_encoder(input_img)
         seg_mask = net_decoder_1(featuremap)
@@ -43,28 +44,27 @@ def forward_with_loss(nets, batch_data, use_seg_label=True):
         
         return seg_mask, err
         
-    else:
-        (imgs, segs, infos) = batch_data
+    else: # unsupervised training
         
-        input_img = Variable(imgs)
-        label_seg = Variable(segs)
+        view2_img = Variable(view2)
+        view2_img = view2_img.cuda()
         
-        input_img = input_img.cuda()
-        label_seg = label_seg.cuda()
-
+        intrs = Variable(intrinsics)
+        intrs = intrs.cuda()
+        
         # forward
         featuremap = net_encoder(input_img)
         seg_mask = net_decoder_1(featuremap)
-        plane_mask = warp(net_decoder_2(featuremap, seg_mask))
+        img_recon = warp(net_decoder_2(featuremap, seg_mask))
         
-        err = crit2(plane_mask, input_img)
+        err = crit2(img_recon, view2_img)
         
-        return seg_mask, plane_mask, err
+        return seg_mask, err
 
 
 def visualize(batch_data, pred, args):
     colors = loadmat('./colormap.mat')['colors']
-    (imgs, segs, infos) = batch_data
+    (imgs, segs, view2, intrinsics, baseline, depth, normals, infos) = batch_data
     for j in range(len(infos)):
         # get/recover image
         # img = imread(os.path.join(args.root_img, infos[j]))
@@ -91,7 +91,7 @@ def visualize(batch_data, pred, args):
 
 
 # train one epoch
-def train(nets, loader, optimizers, history, epoch, args):
+def train(nets, loader_sup, loader_unsup, optimizers, history, epoch, args):
     batch_time = AverageMeter()
     data_time = AverageMeter()
 
@@ -102,16 +102,55 @@ def train(nets, loader, optimizers, history, epoch, args):
         else:
             net.eval()
 
-    # main loop
+    # main supervised loop
     tic = time.time()
-    for i, batch_data in enumerate(loader):
+    for i, batch_data in enumerate(loader_sup):
 
         data_time.update(time.time() - tic)
         for net in nets:
             net.zero_grad()
 
         # forward pass
-        pred, _, err = forward_with_loss(nets, batch_data, use_seg_label=False)
+        pred, err = forward_with_loss(nets, batch_data, use_seg_label=True)
+        err = args.beta * err
+        
+        # Backward
+        err.backward()
+
+        for optimizer in optimizers:
+            optimizer.step()
+
+        # measure elapsed time
+        batch_time.update(time.time() - tic)
+        tic = time.time()
+
+        # calculate accuracy, and display
+        if i % args.disp_iter == 0:
+            acc, _ = accuracy(batch_data, pred)
+
+            print('Epoch: [{}][{}/{}][Sup], Time: {:.2f}, Data: {:.2f}, '
+                  'lr_encoder: {}, lr_decoder: {}, '
+                  'Accuracy: {:4.2f}%, Loss: {}'
+                  .format(epoch, i, args.epoch_iters,
+                          batch_time.average(), data_time.average(),
+                          args.lr_encoder, args.lr_decoder,
+                          acc * 100, err.data.item()))
+
+            fractional_epoch = epoch - 1 + 1. * i / args.epoch_iters
+            history['train']['epoch'].append(fractional_epoch)
+            history['train']['err'].append(err.data.item())
+            history['train']['acc'].append(acc)
+
+    # main unsupervised loop
+    tic = time.time()
+    for i, batch_data in enumerate(loader_unsup):
+        i += len(loader_sup)
+        data_time.update(time.time() - tic)
+        for net in nets:
+            net.zero_grad()
+
+        # forward pass
+        pred, err = forward_with_loss(nets, batch_data, use_seg_label=False)
 
         # Backward
         err.backward()
@@ -127,20 +166,14 @@ def train(nets, loader, optimizers, history, epoch, args):
         if i % args.disp_iter == 0:
             acc, _ = accuracy(batch_data, pred)
 
-            print('Epoch: [{}][{}/{}], Time: {:.2f}, Data: {:.2f}, '
+            print('Epoch: [{}][{}/{}][Unsup], Time: {:.2f}, Data: {:.2f}, '
                   'lr_encoder: {}, lr_decoder: {}, '
                   'Accuracy: {:4.2f}%, Loss: {}'
                   .format(epoch, i, args.epoch_iters,
                           batch_time.average(), data_time.average(),
                           args.lr_encoder, args.lr_decoder,
                           acc * 100, err.data.item()))
-
-            fractional_epoch = epoch - 1 + 1. * i / args.epoch_iters
-            history['train']['epoch'].append(fractional_epoch)
-            history['train']['err'].append(err.data.item())
-            history['train']['acc'].append(acc)
-
-
+            
 def evaluate(nets, loader, history, epoch, args):
     print('Evaluating at {} epochs...'.format(epoch))
     loss_meter = AverageMeter()
@@ -335,12 +368,21 @@ def main(args):
     crit2 = nn.MSELoss()
 
     # Dataset and Loader
-    dataset_train = GTA(root=args.root_gta, cropSize=args.imgSize, is_train=0)
+    dataset_train_sup = CityScapes('train', root=args.root_cityscapes, cropSize=args.imgSize,
+                             max_sample=args.num_sup, is_train=1)
+    dataset_train_unsup = CityScapes('train', root=args.root_cityscapes, cropSize=args.imgSize,
+                             max_sample=-1, is_train=1)
     dataset_val = CityScapes('val', root=args.root_cityscapes, cropSize=args.imgSize,
                              max_sample=args.num_val, is_train=0)
 
-    loader_train = torch.utils.data.DataLoader(
-        dataset_train,
+    loader_train_sup = torch.utils.data.DataLoader(
+        dataset_train_sup,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=int(args.workers),
+        drop_last=True)
+    loader_train_unsup = torch.utils.data.DataLoader(
+        dataset_train_unsup,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=int(args.workers),
@@ -352,7 +394,7 @@ def main(args):
         num_workers=int(args.workers),
         drop_last=True)
 
-    args.epoch_iters = int(len(dataset_train) / args.batch_size)
+    args.epoch_iters = int((len(dataset_train_sup) + len(dataset_train_unsup)) / args.batch_size)
     print('1 Epoch = {} iters'.format(args.epoch_iters))
 
     # load nets into gpu
@@ -378,7 +420,7 @@ def main(args):
     # optional initial eval
     evaluate(nets, loader_val, history, 0, args)
     for epoch in range(1, args.num_epoch + 1):
-        train(nets, loader_train, optimizers, history, epoch, args)
+        train(nets, loader_train_sup, loader_train_unsup, optimizers, history, epoch, args)
 
         # Evaluation and visualization
         if epoch % args.eval_epoch == 0:
@@ -399,18 +441,16 @@ if __name__ == '__main__':
     parser.add_argument('--id', default='noWarp',
                         help="a name for identifying the experiment")
     parser.add_argument('--weights_encoder',
-                        default='/home/selfdriving/kchitta/Style-Randomization/pretrained/encoder_GTA.pth',
+                        default='/home/selfdriving/kchitta/Style-Randomization/pretrained/encoder_cityscapes.pth',
                         help="weights to initialize encoder")
     parser.add_argument('--weights_decoder',
-                        default='/home/selfdriving/kchitta/Style-Randomization/pretrained/decoder_1_GTA.pth',
+                        default='/home/selfdriving/kchitta/Style-Randomization/pretrained/decoder_1_cityscapes.pth',
                         help="weights to initialize segmentation branch")
     parser.add_argument('--weights_plane_net',
                         default='',
                         help="weights to initialize reconstruction branch")
 
     # Path related arguments
-    parser.add_argument('--root_gta',
-                        default='/home/selfdriving/datasets/GTA_full')
     parser.add_argument('--root_cityscapes',
                         default='/home/selfdriving/datasets/cityscapes_full')
 
@@ -429,8 +469,8 @@ if __name__ == '__main__':
     parser.add_argument('--lr_decoder', default=1e-3, type=float, help='LR')
     parser.add_argument('--lr_pow', default=0.9, type=float,
                         help='power in poly to drop LR')
-    parser.add_argument('--beta', default=0.1, type=float,
-                        help='weight of the reconstruction loss')
+    parser.add_argument('--beta', default=1, type=float,
+                        help='relative weight of the supervised loss')
     parser.add_argument('--beta1', default=0.9, type=float,
                         help='momentum for sgd, beta1 for adam')
     parser.add_argument('--weight_decay', default=1e-4, type=float,
@@ -439,6 +479,8 @@ if __name__ == '__main__':
                         help='fix bn params')
 
     # Data related arguments
+    parser.add_argument('--num_sup', default=500, type=int,
+                        help='number of images for supervised training')
     parser.add_argument('--num_val', default=48, type=int,
                         help='number of images to evaluate')
     parser.add_argument('--num_class', default=19, type=int,

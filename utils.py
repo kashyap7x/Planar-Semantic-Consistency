@@ -96,7 +96,7 @@ def colorEncode(labelmap, colors):
 
 
 def accuracy(batch_data, pred):
-    (imgs, segs, infos) = batch_data
+    (imgs, segs, view2, intrinsics, baseline, depth, normals, infos) = batch_data
     _, preds = torch.max(pred.data.cpu(), dim=1)
     valid = (segs >= 0)
     acc = float(torch.sum(valid * (preds == segs)).item()) / float(torch.sum(valid).item() + 1e-10)
@@ -104,7 +104,7 @@ def accuracy(batch_data, pred):
 
 
 def intersectionAndUnion(batch_data, pred, numClass):
-    (imgs, segs, infos) = batch_data
+    (imgs, segs, view2, intrinsics, baseline, depth, normals, infos) = batch_data
     _, preds = torch.max(pred.data.cpu(), dim=1)
 
     # compute area intersection
