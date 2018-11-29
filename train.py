@@ -61,62 +61,6 @@ def forward_with_loss(nets, batch_data, use_seg_label=True):
         
         return seg_mask, err
 
-def getH(plane_eq, R, t, K):
-	"""
-	Extracts H using m depths, normals, planes and pose
-	# Args: depth(mx1), normal(mx3), pose(R,t)
-	Args(tensors): plane_eq(mx4), masks(mx1), R(mx3x3), t(mx3x1), K(mx3x3-intrinsics)
-	Output:	H(mx3x3)
-	"""
-	n = plane_eq[:,:-1].unsqueeze(-1)
-	d = plane_eq[:,-1]
-	n_t = torch.transpose(n,1,2)
-	K_inv = b_inv(K)
-	H_cal = R-torch.bmm(t,n_t/d)
-	H = torch.bmm(K,torch.bmm(H_cal,K_inv))
-	return H
-
-def b_inv(b_mat):
-    eye = b_mat.new_ones(b_mat.size(-1)).diag().expand_as(b_mat)
-    b_inv, _ = torch.gesv(eye, b_mat)
-    return b_inv
-
-
-def getPlaneEq(normal, depth, masks):
-	"""
-	VERIFY EACH STEP
-	Args: normal(mx3xhxw), depth(mxhxw), masks(mxhxw)
-	Output: plane_eq(mx4)
-	"""
-	masked_normal = normal*masks # verify broadcasting
-	masked_depth = depth*masks
-	n = torch.sum(masked_normal.view(args.num_planes, 3, -1), -1)/torch.sum(masks.view(args.num_planes, -1), -1)
-	d = torch.sum(masked_depth.view(args.num_planes, -1),-1)/torch.sum(masks.view(args.num_planes, -1), -1)
-	return n, d
-
-def warpH(img, H):
-	"""
-	Args: img(bxcxhxw), H(bxmx3x3)
-	"""
-	for i_m in range(args.num_planes):
-		grid_size = img.size()
-	    grid = F.affine_grid(H, grid_size)
-	    tx_img = F.grid_sample(img, grid, mode='bilinear', padding_mode='zeros')
-	return tx_img
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 def visualize(batch_data, pred, args):
     colors = loadmat('./colormap.mat')['colors']
