@@ -103,48 +103,49 @@ def train(nets, loader_sup, loader_unsup, optimizers, history, epoch, args):
             net.eval()
 
     # main supervised loop
-    tic = time.time()
-    for i, batch_data in enumerate(loader_sup):
-
-        data_time.update(time.time() - tic)
-        for net in nets:
-            net.zero_grad()
-
-        # forward pass
-        pred, err = forward_with_loss(nets, batch_data, use_seg_label=True)
-        err = args.beta * err
-        
-        # Backward
-        err.backward()
-
-        for optimizer in optimizers:
-            optimizer.step()
-
-        # measure elapsed time
-        batch_time.update(time.time() - tic)
+    for iteration in range(args.gamma):
         tic = time.time()
+        for i, batch_data in enumerate(loader_sup):
+            i += iteration * len(loader_sup)
+            data_time.update(time.time() - tic)
+            for net in nets:
+                net.zero_grad()
 
-        # calculate accuracy, and display
-        if i % args.disp_iter == 0:
-            acc, _ = accuracy(batch_data, pred)
+            # forward pass
+            pred, err = forward_with_loss(nets, batch_data, use_seg_label=True)
+            err = args.beta * err
+            
+            # Backward
+            err.backward()
 
-            print('Epoch: [{}][{}/{}][Sup], Time: {:.2f}, Data: {:.2f}, '
-                  'lr_encoder: {}, lr_decoder: {}, '
-                  'Accuracy: {:4.2f}%, Loss: {}'
-                  .format(epoch, i, args.epoch_iters,
-                          batch_time.average(), data_time.average(),
-                          args.lr_encoder, args.lr_decoder,
-                          acc * 100, err.data.item()))
+            for optimizer in optimizers:
+                optimizer.step()
 
-            fractional_epoch = epoch - 1 + 1. * i / args.epoch_iters
-            history['train']['epoch'].append(fractional_epoch)
-            history['train']['err'].append(err.data.item())
-            history['train']['acc'].append(acc)
+            # measure elapsed time
+            batch_time.update(time.time() - tic)
+            tic = time.time()
+
+            # calculate accuracy, and display
+            if i % args.disp_iter == 0:
+                acc, _ = accuracy(batch_data, pred)
+
+                print('Epoch: [{}][{}/{}][Sup], Time: {:.2f}, Data: {:.2f}, '
+                    'lr_encoder: {}, lr_decoder: {}, '
+                    'Accuracy: {:4.2f}%, Loss: {}'
+                    .format(epoch, i, args.epoch_iters,
+                            batch_time.average(), data_time.average(),
+                            args.lr_encoder, args.lr_decoder,
+                            acc * 100, err.data.item()))
+
+                fractional_epoch = epoch - 1 + 1. * i / args.epoch_iters
+                history['train']['epoch'].append(fractional_epoch)
+                history['train']['err'].append(err.data.item())
+                history['train']['acc'].append(acc)
 
     # main unsupervised loop
     tic = time.time()
     for i, batch_data in enumerate(loader_unsup):
-        i += len(loader_sup)
+        i += args.gamma * len(loader_sup)
         data_time.update(time.time() - tic)
         for net in nets:
             net.zero_grad()
@@ -394,7 +395,7 @@ def main(args):
         num_workers=int(args.workers),
         drop_last=True)
 
-    args.epoch_iters = int((len(dataset_train_sup) + len(dataset_train_unsup)) / args.batch_size)
+    args.epoch_iters = int((args.gamma * len(dataset_train_sup) + len(dataset_train_unsup)) / args.batch_size)
     print('1 Epoch = {} iters'.format(args.epoch_iters))
 
     # load nets into gpu
@@ -438,7 +439,7 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # Model related arguments
-    parser.add_argument('--id', default='noWarp',
+    parser.add_argument('--id', default='sup_only',
                         help="a name for identifying the experiment")
     parser.add_argument('--weights_encoder',
                         default='/home/selfdriving/kchitta/Style-Randomization/pretrained/encoder_cityscapes.pth',
@@ -461,7 +462,7 @@ if __name__ == '__main__':
                         help='input batch size')
     parser.add_argument('--batch_size_per_gpu_eval', default=1, type=int,
                         help='eval batch size')
-    parser.add_argument('--num_epoch', default=3, type=int,
+    parser.add_argument('--num_epoch', default=20, type=int,
                         help='epochs to train for')
 
     parser.add_argument('--optim', default='SGD', help='optimizer')
@@ -469,6 +470,8 @@ if __name__ == '__main__':
     parser.add_argument('--lr_decoder', default=1e-3, type=float, help='LR')
     parser.add_argument('--lr_pow', default=0.9, type=float,
                         help='power in poly to drop LR')
+    parser.add_argument('--gamma', default=5, type=float,
+                        help='number of repetitions of supervised training per epoch')
     parser.add_argument('--beta', default=1, type=float,
                         help='relative weight of the supervised loss')
     parser.add_argument('--beta1', default=0.9, type=float,
@@ -479,9 +482,9 @@ if __name__ == '__main__':
                         help='fix bn params')
 
     # Data related arguments
-    parser.add_argument('--num_sup', default=500, type=int,
+    parser.add_argument('--num_sup', default=100, type=int,
                         help='number of images for supervised training')
-    parser.add_argument('--num_val', default=48, type=int,
+    parser.add_argument('--num_val', default=50, type=int,
                         help='number of images to evaluate')
     parser.add_argument('--num_class', default=19, type=int,
                         help='number of classes')
