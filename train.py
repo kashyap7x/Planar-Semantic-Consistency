@@ -37,7 +37,7 @@ def forward_with_loss(nets, batch_data, use_seg_label=True):
         label_seg = label_seg.cuda()
         
         # forward
-        featuremap = net_encoder(input_img)
+        featuremap, _ = net_encoder(input_img)
         seg_mask = net_decoder_1(featuremap)
         
         err = crit1(seg_mask, label_seg)
@@ -53,9 +53,9 @@ def forward_with_loss(nets, batch_data, use_seg_label=True):
         intrs = intrs.cuda()
         
         # forward
-        featuremap = net_encoder(input_img)
+        featuremap, mid_feats = net_encoder(input_img)
         seg_mask = net_decoder_1(featuremap)
-        img_recon = warp(net_decoder_2(featuremap, seg_mask))
+        img_recon = warp(net_decoder_2(mid_feats, seg_mask))
         
         err = crit2(img_recon, view2_img)
         
@@ -209,7 +209,7 @@ def evaluate(nets, loader, history, epoch, args):
         print('class [{}], IoU: {}'.format(trainID2Class[i], _iou))
 
     print('[Eval Summary]:')
-    print('Epoch: {}, Loss: {}, Mean IoU: {:.4}, Accurarcy: {:.2f}%'
+    print('Epoch: {}, Loss: {}, Mean IoU: {:.4}, Accuracy: {:.2f}%'
           .format(epoch, loss_meter.average(), iou.mean(), acc_meter.average() * 100))
 
     history['val']['epoch'].append(epoch)

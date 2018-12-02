@@ -134,13 +134,15 @@ class ResnetEncoder(nn.Module):
         x = self.maxpool(x)
 
         x = self.layer1(x)
+        y = self.maxpool(x)
+        
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
 
         if self.dropout2d:
             x = self.dropout(x)
-        return x
+        return x, y
 
 
 class PPMDecoder(nn.Module):
@@ -193,7 +195,7 @@ class C1Decoder(nn.Module):
         self.avgpool = nn.AvgPool2d(8, stride=8)
         
         # last conv
-        self.conv_last = nn.Conv2d(512 + num_class, num_plane, 1, 1, 0)
+        self.conv_last = nn.Conv2d(64 + num_class, num_plane, 1, 1, 0)
 
     def forward(self, x, probs):
         input_size = x.size()
