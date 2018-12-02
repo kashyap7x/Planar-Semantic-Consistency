@@ -20,17 +20,17 @@ def string_length_tf(t):
 class MonodepthDataloader(object):
     """monodepth dataloader"""
 
-    def __init__(self, data_path, filenames_file, params, dataset, mode):
+    def __init__(self, data_path, filenames_file, camnames_file, params, dataset, mode):
         self.data_path = data_path
-        # self.cam_path = self.data_path.replace('leftImg8bit', 'camera')
+        self.cam_path = self.data_path.replace('leftImg8bit', 'camera')
         self.params = params
         self.dataset = dataset
         self.mode = mode
 
         self.left_image_batch  = None
-        # self.fx_batch = None
-        # self.fy_batch = None
-        # self.baseline_batch = None
+        self.fx_batch = None
+        self.fy_batch = None
+        self.baseline_batch = None
         self.right_image_batch = None
 
         # get the file list
@@ -39,29 +39,29 @@ class MonodepthDataloader(object):
         left_paths = [x.split()[0] for x in left_paths]
 
         # get the camera list
-        # with open(camnames_file) as f:
-            # cam_paths = f.readlines()
-        # cam_paths = [x.strip() for x in cam_paths]
+        with open(camnames_file) as f:
+            cam_paths = f.readlines()
+        cam_paths = [x.strip() for x in cam_paths]
 
 
         input_queue = tf.train.string_input_producer([filenames_file], shuffle=False)
-        # cam_queue = tf.train.string_input_producer([camnames_file], shuffle=False)
+        cam_queue = tf.train.string_input_producer([camnames_file], shuffle=False)
 
         # input_queue = tf.data.Dataset.from_tensor_slices([filenames_file])
         line_reader = tf.TextLineReader()
-        # cam_reader = tf.TextLineReader()
+        cam_reader = tf.TextLineReader()
         _, line = line_reader.read(input_queue)
-        # _, cam = cam_reader.read(cam_queue)
+        _, cam = cam_reader.read(cam_queue)
 
         split_line = tf.string_split([line]).values
-        # split_cam = tf.string_split([cam]).values
+        split_cam = tf.string_split([cam]).values
 
         # we load only one image for test, except if we trained a stereo model
         if mode == 'test' or mode == 'custom_test' and not self.params.do_stereo:
             left_image_path  = tf.string_join([self.data_path, split_line[0]])
             left_image_o  = self.read_image(left_image_path)
-            # cam_path = tf.string_join([self.cam_path, split_cam[0]])
-            # fx_o, fy_o, baseline_o = self.read_cam(cam_path)
+            cam_path = tf.string_join([self.cam_path, split_cam[0]])
+            fx_o, fy_o, baseline_o = self.read_cam(cam_path)
         else:
             left_image_path  = tf.string_join([self.data_path, split_line[0]])
             right_image_path = tf.string_join([self.data_path, split_line[1]])
@@ -95,7 +95,7 @@ class MonodepthDataloader(object):
             # self.baseline_batch.set_shape([1,None])
 
             self.left_image_path = left_paths
-            # self.cam_path = cam_paths
+            self.cam_path = cam_paths
 
             if self.params.do_stereo:
                 self.right_image_batch = tf.stack([right_image_o,  tf.image.flip_left_right(right_image_o)],  0)
@@ -138,18 +138,19 @@ class MonodepthDataloader(object):
         #     o_height    = tf.shape(image)[0]
         #     crop_height = (o_height * 4) // 5
         #     image  =  image[:crop_height,:,:]
+
         image  = tf.image.convert_image_dtype(image,  tf.float32)
         image  = tf.image.resize_images(image,  [self.params.height, self.params.width], tf.image.ResizeMethod.AREA)
 
         return image
 
-    # def read_cam(self, cam_path):
-    #     # tf.decode_image does not return the image size, this is an ugly workaround to handle both jpeg and png
+    def read_cam(self, cam_path):
+        # tf.decode_image does not return the image size, this is an ugly workaround to handle both jpeg and png
         
-    #     cam = tf.io.image.decode_json_example(tf.read_file(cam_path))
-    #     pdb.set_trace()
-    #     fx = cam['intrinsic']['fx'];
-    #     fy = cam['intrinsic']['fy'];
-    #     baseline = cam['extrinsic']['baseline']
+        cam = tf.io.decode_json_example(tf.read_file(cam_path))
+        pdb.set_trace()
+        fx = cam['intrinsic']['fx'];
+        fy = cam['intrinsic']['fy'];
+        baseline = cam['extrinsic']['baseline']
 
-    #     return fx, fy, baseline
+        return fx, fy, baseline

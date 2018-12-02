@@ -35,6 +35,7 @@ parser.add_argument('--encoder',                   type=str,   help='type of enc
 parser.add_argument('--dataset',                   type=str,   help='dataset to train on, kitti, or cityscapes', default='kitti')
 parser.add_argument('--data_path',                 type=str,   help='path to the data', required=True)
 parser.add_argument('--filenames_file',            type=str,   help='path to the filenames text file', required=True)
+parser.add_argument('--camnames_file',             type=str,   help='path to the camnames text file', required=True)
 parser.add_argument('--input_height',              type=int,   help='input height', default=256)
 parser.add_argument('--input_width',               type=int,   help='input width', default=512)
 parser.add_argument('--batch_size',                type=int,   help='batch size', default=8)
@@ -229,12 +230,25 @@ def test(params):
 
     print('done.')
 
+def disparity2depth(disp_pp, fx, fy, baseline):
+    # Scale back depth with width 
+    pdb.set_trace()
+    focal = (fx+fy)/2
+    depth = baseline * focal/disparity;
+    return depth
+
+def disparity2normal():
+    pass
+
+
 def custom_test(params):
     """Test function."""
-    dataloader = MonodepthDataloader(args.data_path, args.filenames_file, params, args.dataset, "test")
+    dataloader = MonodepthDataloader(args.data_path, args.filenames_file, args.camnames_file, params, args.dataset, "test")
     left  = dataloader.left_image_batch
+    fx, fy, baseline = dataloader.fx_batch, dataloader.fy_batch, dataloader.baseline_batch
     # right = dataloader.right_image_batch
     left_paths = dataloader.left_image_path
+    cam_paths = dataloader.cam_path
     
     model = MonodepthModel(params, "test", left, None)
 
@@ -272,6 +286,8 @@ def custom_test(params):
     for step in range(num_test_samples):
         disp = sess.run(model.disp_left_est[0])
         disp_pp = post_process_disparity(disp.squeeze())
+        pdb.set_trace()
+        depth = disparity2depth(disp_pp, f_x, f_y, baseline)
         disparities[step] = disp[0].squeeze()
         disparities_pp[step] = disp_pp
         output_name = os.path.splitext(os.path.basename(left_paths[step]))[0]

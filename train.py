@@ -25,7 +25,7 @@ from tqdm import tqdm
 def forward_with_loss(nets, batch_data, use_seg_label=True):
     (net_encoder, net_decoder_1, net_decoder_2, warp, crit1, crit2) = nets
     
-    (imgs, segs, view2, intrinsics, baseline, depth, normals, infos) = batch_data
+    (imgs, segs, view2, intrinsics, baseline, disp, infos) = batch_data
     
     input_img = Variable(imgs)
     input_img = input_img.cuda()
@@ -51,11 +51,16 @@ def forward_with_loss(nets, batch_data, use_seg_label=True):
         
         intrs = Variable(intrinsics)
         intrs = intrs.cuda()
+
+        ## Todo: Add depth and normals
         
         # forward
         featuremap, mid_feats = net_encoder(input_img)
         seg_mask = net_decoder_1(featuremap)
-        img_recon = warp(net_decoder_2(mid_feats, seg_mask))
+        planar_masks = net_decoder_2(mid_feats, seg_mask)
+        # warp 
+        
+        img_recon = warp(input_img, planar_masks, disp, intrs, baseline) 
         
         err = crit2(img_recon, view2_img)
         
@@ -64,7 +69,7 @@ def forward_with_loss(nets, batch_data, use_seg_label=True):
 
 def visualize(batch_data, pred, args):
     colors = loadmat('./colormap.mat')['colors']
-    (imgs, segs, view2, intrinsics, baseline, depth, normals, infos) = batch_data
+    (imgs, segs, view2, intrinsics, baseline, disp, infos) = batch_data
     for j in range(len(infos)):
         # get/recover image
         # img = imread(os.path.join(args.root_img, infos[j]))

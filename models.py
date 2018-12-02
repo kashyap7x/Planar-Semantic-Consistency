@@ -4,58 +4,122 @@ import math
 from lib.nn import SynchronizedBatchNorm2d
 
 
-class NovelViewHomography(nn.Module):
+class NovelViewHomography(nn.Module): # Actually warp in train.h
     def __init__(self):
         super(NovelViewHomography, self).__init__()
 
-    def forward(self, x):
-        return x
+    def forward(self, img, planar_masks, disp, intrs, baseline):
+        """
+        Args: img(bxcxhxw), planar_masks(bx1xhxw), depth(bx1xhxw), normal()
+        """
+        R, t = self.get_Rt(baseline)
+
+        # Get depth and normal from disp 
+        depth = self.disp2depth(disp, intrs, baseline)
+        normal = self.depth2normal(depth)
+        planar_depth, planar_normal = get_planar_depth_normal(planar_masks, depth, normal)
+
+
+        # for i_m in range(args.num_planes):
+        #     grid_size = img.size()
+        #     grid = F.affine_grid(H, grid_size)
+        #     tx_img = F.grid_sample(img, grid, mode='bilinear', padding_mode='zeros')
+        # return tx_img
+
+    def get_planar_depth_normal(self, planar_masks, depth, normal):
+        b, c, h, w  = planar_masks.shape
+        flat_masks = planar_masks.view(b, c, w*h)
+        planar_weights = F.softmax(flat_masks, -1)
+        flat_depth = depth.view(b, w*h)
+        flat_normal = normal.view(b, 3, w*h)
+        planar_depth = torch.sum(planar_weights*flat_depth,-1)
+        planar_normal = torch.sum(planar_weights*flat_normal,-1)
+        return planar_depth, planar_normal
+
     
+    def get_Rt(self, baseline):
+        batch_size = size(baseline,0)
+        R = torch.eye(3)
+        R = R.repeat(batch_size,1)
+        R = Variable(R).cuda()
+        t = torch.zeros(batch_size,3,1).cuda()
+        t[2] = -baseline
+        t = Variable(t).cuda()
+        return R, t
 
-def getH(plane_eq, R, t, K):
-    """
-    Extracts H using m depths, normals, planes and pose
-    # Args: depth(mx1), normal(mx3), pose(R,t)
-    Args(tensors): plane_eq(mx4), masks(mx1), R(mx3x3), t(mx3x1), K(mx3x3-intrinsics)
-    Output:	H(mx3x3)
-    """
-    n = plane_eq[:,:-1].unsqueeze(-1)
-    d = plane_eq[:,-1]
-    n_t = torch.transpose(n,1,2)
-    K_inv = b_inv(K)
-    H_cal = R-torch.bmm(t,n_t/d)
-    H = torch.bmm(K,torch.bmm(H_cal,K_inv))
-    return H
+    def getH(self, plane_eq, R, t, K):
+        """
+        Extracts H using m depths, normals, planes and pose
+        # Args: depth(bxm), normal(bxmx3), R(bx3x3), t(bx3x1)
+        Args(tensors): plane_eq(mx4), masks(mx1), R(mx3x3), t(mx3x1), K(mx3x3-intrinsics)
+        Output:	H(mx3x3)
+        """
 
-
-def b_inv(b_mat):
-    eye = b_mat.new_ones(b_mat.size(-1)).diag().expand_as(b_mat)
-    b_inv, _ = torch.gesv(eye, b_mat)
-    return b_inv
-
-
-def getPlaneEq(normal, depth, masks):
-    """
-    VERIFY EACH STEP
-    Args: normal(mx3xhxw), depth(mxhxw), masks(mxhxw)
-    Output: plane_eq(mx4)
-    """
-    masked_normal = normal*masks # verify broadcasting
-    masked_depth = depth*masks
-    n = torch.sum(masked_normal.view(args.num_planes, 3, -1), -1)/torch.sum(masks.view(args.num_planes, -1), -1)
-    d = torch.sum(masked_depth.view(args.num_planes, -1),-1)/torch.sum(masks.view(args.num_planes, -1), -1)
-    return n, d
+        n = plane_eq[:,:-1].unsqueeze(-1)
+        d = plane_eq[:,-1]
+        n_t = torch.transpose(n,1,2)
+        K_inv = b_inv(K)
+        H_cal = R-torch.bmm(t,n_t/d)
+        H = torch.bmm(K,torch.bmm(H_cal,K_inv))
+        return H
 
 
-def warpH(img, H):
-    """
-    Args: img(bxcxhxw), H(bxmx3x3)
-    """
-    for i_m in range(args.num_planes):
-        grid_size = img.size()
-        grid = F.affine_grid(H, grid_size)
-        tx_img = F.grid_sample(img, grid, mode='bilinear', padding_mode='zeros')
-    return tx_img
+
+    def b_inv(self, b_mat):
+        eye = b_mat.new_ones(b_mat.size(-1)).diag().expand_as(b_mat)
+        b_inv, _ = torch.gesv(eye, b_mat)
+        return b_inv
+
+
+    def getPlaneEq(self, normal, depth, masks):
+        """
+        VERIFY EACH STEP
+        Args: normal(mx3xhxw), depth(mxhxw), masks(mxhxw)
+        Output: plane_eq(mx4)
+        """
+        masked_normal = normal*masks # verify broadcasting
+        masked_depth = depth*masks
+        n = torch.sum(masked_normal.view(args.num_planes, 3, -1), -1)/torch.sum(masks.view(args.num_planes, -1), -1)
+        d = torch.sum(masked_depth.view(args.num_planes, -1),-1)/torch.sum(masks.view(args.num_planes, -1), -1)
+        return n, d
+
+
+    def warpH(self, img, H):
+        """
+        Args: img(bxcxhxw), H(bxmx3x3)
+        """
+        for i_m in range(args.num_planes):
+            grid_size = img.size()
+            grid = F.affine_grid(H, grid_size)
+            tx_img = F.grid_sample(img, grid, mode='bilinear', padding_mode='zeros')
+        return tx_img
+
+    def disp2depth(self, disp, intrs, baseline):
+        fx = intrs[:,0, 0]
+        fy = intrs[:,1, 1]
+        focal = (fx+fy)/2
+        depth = baseline * focal/(disparity*disp.size(2));
+        print('Width of image for disparity scaling: %d' %disp.size(2))
+        return depth
+
+    def tensor_grad(self, depth, kernel):
+        depth_grad = F.conv2d(depth, kernel, padding=1)
+        return depth_grad
+
+    def depth2normals(self, depth):
+        # depth(B,H,W)
+        sobelx = np.array[0,0,0;
+                          -1,0,1;
+                          0,0,0]
+        sobely = sobelx.T 
+        sobelx_kernel = torch.FloatTensor(sobelx).unsqueeze(0).cuda()
+        sobely_kernel = torch.FloatTensor(sobely).unsqueeze(0).cuda()
+        depth_gradx = self.tensor_grad(depth, sobelx_kernel)
+        depth_grady = self.tensor_grad(depth, sobely_kernel)
+        dir_map = torch.stack([-depth_gradx, -depth_grady, torch.ones(size(depth_grad_x))],1)
+        norm_factor = torch.sqrt(torch.sum(dir_map**2,1))
+        normal_map = dir_map/norm_factor
+        return normal_map
 
 
 class ModelBuilder():

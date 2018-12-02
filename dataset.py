@@ -7,6 +7,7 @@ import torch.utils.data as torchdata
 from torchvision import transforms
 from scipy.misc import imread, imresize
 from tqdm import tqdm
+from scipy.interpolate import RectBivariateSpline, interp2d
 
 
 trainID2Class = {
@@ -50,19 +51,14 @@ def make_CityScapes(mode, root):
     camera_path = os.path.join(root, 'camera_trainvaltest', 'camera', mode)
     camera_suffix = '_camera.json'
     
-    # depth map
-    depth_path = None
-    depth_suffix = None
+    # disparity map
+    disp_path = img_path
+    disp_suffix = '_leftImg8bit_disp.npy'
     
-    # normal map
-    normal_path = None
-    normal_suffix = None
-    
+
     assert os.listdir(img_path) == os.listdir(mask_path)
     assert os.listdir(img_path) == os.listdir(view2_path)
     assert os.listdir(img_path) == os.listdir(camera_path)
-    #assert os.listdir(img_path) == os.listdir(depth_path)
-    #assert os.listdir(img_path) == os.listdir(normal_path)
     
     items = []
     categories = os.listdir(img_path)
@@ -70,11 +66,11 @@ def make_CityScapes(mode, root):
         c_items = [name.split(img_suffix)[0] for name in os.listdir(os.path.join(img_path, c))]
         for it in c_items:
             item = (os.path.join(img_path, c, it + img_suffix), 
-                    os.path.join(mask_path, c, it + mask_suffix), 
+                    os.path.join(mask_path, c, it + mask_suffix), Normal
                     os.path.join(view2_path, c, it + view2_suffix), 
                     os.path.join(camera_path, c, it + camera_suffix),
-                    None,
-                    None)
+                    os.path.join(disp_path, c, it + disp_suffix)
+                    )
             items.append(item)
     return items
 
@@ -101,16 +97,26 @@ class CityScapes(torchdata.Dataset):
         num_sample = len(self.list_sample)
         assert num_sample > 0
         print('# samples: {}'.format(num_sample))
+
+    def _scale_npy(self, arr, h, w):
+        y = np.arange(0, arr.shape[0]);
+        x = np.arange(0, arr.shape[1]);
+        spline = RectBivariateSpline(y,x, arr)
+        yq = np.arange(0, h)
+        xq = np.arange(0, w)
+        arr_scale = spline.ev(yq[:,None], xq[None, :])
+
+
+
     
-    def _scale_and_crop(self, img, seg, view2, depth, normals, cropSize, is_train):
+    def _scale_and_crop(self, img, seg, view2, disp, cropSize, is_train):
         h_s, w_s = 720, 1440
         img_scale = imresize(img, (h_s, w_s), interp='bilinear')
         seg = (seg + 1).astype(np.uint8)
         seg_scale = imresize(seg, (h_s, w_s), interp='nearest')
         seg_scale = seg_scale.astype(np.int) - 1
         view2_scale = imresize(view2, (h_s, w_s), interp='bilinear')
-        depth_scale = depth
-        normals_scale = normals
+        disp_scale = self._scale_npy(disp, h_s, w_s)
         
         if is_train:
             # random crop
@@ -119,36 +125,32 @@ class CityScapes(torchdata.Dataset):
             img_crop = img_scale[y1: y1 + cropSize, x1: x1 + cropSize, :]
             seg_crop = seg_scale[y1: y1 + cropSize, x1: x1 + cropSize]
             view2_crop = view2_scale[y1: y1 + cropSize, x1: x1 + cropSize, :]
-            depth_crop = depth_scale
-            normals_crop = normals_scale
+            disp_crop = disp_scale[y1: y1 + cropSize, x1: x1 + cropSize]
         else:
             # no crop
             img_crop = img_scale
             seg_crop = seg_scale
             view2_crop = view2_scale
-            depth_crop = depth_scale
-            normals_crop = normals_scale
+            disp_crop = disp_scale
             
-        return img_crop, seg_crop, view2_crop, depth_crop, normals_crop
+        return img_crop, seg_crop, view2_crop, disp_crop
 
-    def _flip(self, img, seg, view2, depth, normals):
+    def _flip(self, img, seg, view2, disp):
         img_flip = img[:, ::-1, :].copy()
         seg_flip = seg[:, ::-1].copy()
         view2_flip = view2[:, ::-1, :].copy()
-        depth_flip = depth
-        normals_flip = normals
-        return img_flip, seg_flip, view2_flip, depth_flip, normals_flip
+        disp_flip = disp[:, ::-1].copy()
+        return img_flip, seg_flip, view2_flip, disp_flip
 
     def __getitem__(self, index):
-        img_path, seg_path, view2_path, cam_path, depth_path, normal_path = self.list_sample[index]
+        img_path, seg_path, view2_path, cam_path, disp_path = self.list_sample[index]
 
         img = imread(img_path, mode='RGB')
         seg = imread(seg_path, mode='P')
         view2 = imread(view2_path, mode='RGB')
         with open(cam_path) as f:
             cam = json.load(f)
-        depth = None
-        normals = None
+        disp = np.load(disp_path)
         
         intrinsics = np.eye(3)
         intrinsics[0,0] = cam['intrinsic']['fx']
@@ -164,10 +166,10 @@ class CityScapes(torchdata.Dataset):
         seg = seg_copy
         
         # random scale, crop, flip
-        img, seg, view2, depth, normals = self._scale_and_crop(img, seg, view2, depth, normals,
+        img, seg, view2, disp = self._scale_and_crop(img, seg, view2, disp,
                                         self.cropSize, self.is_train)
         if self.is_train and random.choice([-1, 1]) > 0:
-            img, seg, view2, depth, normals = self._flip(img, seg, view2, depth, normals)
+            img, seg, view2, disp = self._flip(img, seg, view2, disp)
 
         # image to float
         img = img.astype(np.float32) / 255.
@@ -181,13 +183,12 @@ class CityScapes(torchdata.Dataset):
         segmentation = torch.from_numpy(seg)
         view2 = torch.from_numpy(view2)
         intrinsics = torch.from_numpy(intrinsics)
-        depth = []
-        normals = []
+        disp = torch.from_numpy(disp)
         
         # normalize
         image = self.img_transform(image)
 
-        return image, segmentation.long(), view2, intrinsics, baseline, depth, normals, img_path
+        return image, segmentation.long(), view2, intrinsics, baseline, disp, img_path
 
     def __len__(self):
         return len(self.list_sample)
