@@ -15,19 +15,17 @@ class NovelViewHomography(nn.Module): # Actually warp in train.h
         """
         R, t = self.get_Rt(baseline)
 
-        # Get depth and normal from disp 
+        # get depth and normal from disp 
         depth = self.disp2depth(disp, intrs, baseline)
         normal = self.depth2normal(depth)
         planar_depth, planar_normal = self.get_planar_depth_normal(planar_masks, depth, normal)
+        
+        # compute homographies and image stack
         H = self.get_H(planar_depth, planar_normal, R, t, intrs)
-        tx_img_planes =  self.warpH(img, H)
-
-        return tx_img_planes
-        # for i_m in range(args.num_planes):
-        #     grid_size = img.size()
-        #     grid = F.affine_grid(H, grid_size)
-        #     tx_img = F.grid_sample(img, grid, mode='bilinear', padding_mode='zeros')
-        # return tx_img
+        warp_img_stack =  self.warpH(img, H)
+        view2_img_generated = torch.sum(warp_img_stack*F.softmax(planar_masks, 1).unsqueeze(2),1)
+        
+        return view2_img_generated
 
     def get_planar_depth_normal(self, planar_masks, depth, normal):
         b, m, h, w  = planar_masks.shape
@@ -93,10 +91,9 @@ class NovelViewHomography(nn.Module): # Actually warp in train.h
         b,m,_,_ = H.shape
         _,c,h,w = img.shape
         tx_img = torch.zeros(img.shape)
-        print(H.shape, tx_img.shape)
         img = img.unsqueeze(1).repeat(1,m,1,1,1).view(-1,c,h,w)
         H = H.view(-1,3,3)
-        H_aff = H[:,2,3]
+        H_aff = H[:,:2,:]
         grid_size = img.shape
         grid = F.affine_grid(H_aff, grid_size)
         tx_img = F.grid_sample(img, grid, mode='bilinear', padding_mode='zeros')

@@ -437,7 +437,7 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # Model related arguments
-    parser.add_argument('--id', default='sup_only',
+    parser.add_argument('--id', default='warp',
                         help="a name for identifying the experiment")
     parser.add_argument('--weights_encoder',
                         default='/home/selfdriving/kchitta/Style-Randomization/pretrained/encoder_cityscapes.pth',
@@ -486,7 +486,7 @@ if __name__ == '__main__':
                         help='number of images to evaluate')
     parser.add_argument('--num_class', default=19, type=int,
                         help='number of classes')
-    parser.add_argument('--num_plane', default=100, type=int,
+    parser.add_argument('--num_plane', default=15, type=int,
                         help='number of planes')
     parser.add_argument('--workers', default=4, type=int,
                         help='number of data loading workers')
@@ -531,9 +531,8 @@ if __name__ == '__main__':
     args.id += '-epoch' + str(args.num_epoch)
     args.id += '-decay' + str(args.weight_decay)
     args.id += '-beta' + str(args.beta)
-    if args.weighted_class:
-        args.id += '-weighted' + str(args.enhanced_weight) + str(enhance_class)
-
+    args.id += '-plane' + str(args.num_plane)
+    
     print('Model ID: {}'.format(args.id))
 
     args.ckpt = os.path.join(args.ckpt, args.id)
