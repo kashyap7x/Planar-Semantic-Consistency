@@ -18,8 +18,9 @@ class NovelViewHomography(nn.Module): # Actually warp in train.h
         depth = self.disp2depth(disp, intrs, baseline)
         normal = self.depth2normal(depth)
         planar_depth, planar_normal = get_planar_depth_normal(planar_masks, depth, normal)
-
-
+        H = self.get_H(planar_depth, planar_normal, R, t, intrs)
+        tx_img =  self.warpH(img, H)
+        return tx_img
         # for i_m in range(args.num_planes):
         #     grid_size = img.size()
         #     grid = F.affine_grid(H, grid_size)
@@ -47,17 +48,17 @@ class NovelViewHomography(nn.Module): # Actually warp in train.h
         t = Variable(t).cuda()
         return R, t
 
-    def getH(self, plane_eq, R, t, K):
+    def getH(self, planar_depth, planar_normal, R, t, K):
         """
         Extracts H using m depths, normals, planes and pose
-        # Args: depth(bxm), normal(bxmx3), R(bx3x3), t(bx3x1)
-        Args(tensors): plane_eq(mx4), masks(mx1), R(mx3x3), t(mx3x1), K(mx3x3-intrinsics)
-        Output:	H(mx3x3)
+        # Args: planar_depth(bxm), planar_normal(bxmx3x1), R(bx3x3), t(bx3x1), K(bx3x3)
+        
+        Output:	H(bxmx3x3)
         """
 
-        n = plane_eq[:,:-1].unsqueeze(-1)
-        d = plane_eq[:,-1]
-        n_t = torch.transpose(n,1,2)
+        n = planar_normal
+        d = planar_depth
+        n_t = torch.transpose(n,-2,-1)
         K_inv = b_inv(K)
         H_cal = R-torch.bmm(t,n_t/d)
         H = torch.bmm(K,torch.bmm(H_cal,K_inv))
@@ -88,10 +89,12 @@ class NovelViewHomography(nn.Module): # Actually warp in train.h
         """
         Args: img(bxcxhxw), H(bxmx3x3)
         """
+        tx_img = torch.zeros(img.shape)
         for i_m in range(args.num_planes):
+        	H_plane = H[:,i_m,:2,3].squeeze()
             grid_size = img.size()
-            grid = F.affine_grid(H, grid_size)
-            tx_img = F.grid_sample(img, grid, mode='bilinear', padding_mode='zeros')
+            grid = F.affine_grid(H_plane, grid_size)
+            tx_img(:,i_m,:,:) = F.grid_sample(img(:,i_m,:,:), grid, mode='bilinear', padding_mode='zeros')
         return tx_img
 
     def disp2depth(self, disp, intrs, baseline):
