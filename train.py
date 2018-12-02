@@ -102,11 +102,43 @@ def train(nets, loader_sup, loader_unsup, optimizers, history, epoch, args):
         else:
             net.eval()
 
+    # main unsupervised loop
+    tic = time.time()
+    for i, batch_data in enumerate(loader_unsup):
+        data_time.update(time.time() - tic)
+        for net in nets:
+            net.zero_grad()
+
+        # forward pass
+        pred, err = forward_with_loss(nets, batch_data, use_seg_label=False)
+
+        # Backward
+        err.backward()
+
+        for optimizer in optimizers:
+            optimizer.step()
+
+        # measure elapsed time
+        batch_time.update(time.time() - tic)
+        tic = time.time()
+
+        # calculate accuracy, and display
+        if i % args.disp_iter == 0:
+            acc, _ = accuracy(batch_data, pred)
+
+            print('Epoch: [{}][{}/{}][Unsup], Time: {:.2f}, Data: {:.2f}, '
+                  'lr_encoder: {}, lr_decoder: {}, '
+                  'Accuracy: {:4.2f}%, Loss: {}'
+                  .format(epoch, i, args.epoch_iters,
+                          batch_time.average(), data_time.average(),
+                          args.lr_encoder, args.lr_decoder,
+                          acc * 100, err.data.item()))
+                  
     # main supervised loop
     for iteration in range(args.gamma):
         tic = time.time()
         for i, batch_data in enumerate(loader_sup):
-            i += iteration * len(loader_sup)
+            i += iteration * len(loader_sup) + len(loader_unsup)
             data_time.update(time.time() - tic)
             for net in nets:
                 net.zero_grad()
@@ -141,39 +173,6 @@ def train(nets, loader_sup, loader_unsup, optimizers, history, epoch, args):
                 history['train']['epoch'].append(fractional_epoch)
                 history['train']['err'].append(err.data.item())
                 history['train']['acc'].append(acc)
-
-    # main unsupervised loop
-    tic = time.time()
-    for i, batch_data in enumerate(loader_unsup):
-        i += args.gamma * len(loader_sup)
-        data_time.update(time.time() - tic)
-        for net in nets:
-            net.zero_grad()
-
-        # forward pass
-        pred, err = forward_with_loss(nets, batch_data, use_seg_label=False)
-
-        # Backward
-        err.backward()
-
-        for optimizer in optimizers:
-            optimizer.step()
-
-        # measure elapsed time
-        batch_time.update(time.time() - tic)
-        tic = time.time()
-
-        # calculate accuracy, and display
-        if i % args.disp_iter == 0:
-            acc, _ = accuracy(batch_data, pred)
-
-            print('Epoch: [{}][{}/{}][Unsup], Time: {:.2f}, Data: {:.2f}, '
-                  'lr_encoder: {}, lr_decoder: {}, '
-                  'Accuracy: {:4.2f}%, Loss: {}'
-                  .format(epoch, i, args.epoch_iters,
-                          batch_time.average(), data_time.average(),
-                          args.lr_encoder, args.lr_decoder,
-                          acc * 100, err.data.item()))
             
 def evaluate(nets, loader, history, epoch, args):
     print('Evaluating at {} epochs...'.format(epoch))
