@@ -25,51 +25,45 @@ from tqdm import tqdm
 def forward_with_loss(nets, batch_data, use_seg_label=True):
     (net_encoder, net_decoder_1, net_decoder_2, warp, crit1, crit2) = nets
     
-    (imgs, segs, view2, intrinsics, baseline, disp, infos) = batch_data
-    
-    input_img = Variable(imgs)
-    input_img = input_img.cuda()
+    (imgs, segs, view2, intrs, baseline, disp, infos) = batch_data
+
+    imgs = imgs.cuda()    
     
     # feed input data
     if use_seg_label: # supervised training
         
-        label_seg = Variable(segs)
-        label_seg = label_seg.cuda()
+        segs = segs.cuda()
         
         # forward
-        featuremap, _ = net_encoder(input_img)
+        featuremap, _ = net_encoder(imgs)
         seg_mask = net_decoder_1(featuremap)
         
-        err = crit1(seg_mask, label_seg)
+        err = crit1(seg_mask, segs)
         
         return seg_mask, err
         
     else: # unsupervised training
         
-        view2_img = Variable(view2)
-        view2_img = view2_img.cuda()
-        
-        intrs = Variable(intrinsics)
+        view2 = view2.cuda()
         intrs = intrs.cuda()
-
-        ## Todo: Add depth and normals
+        disp = disp.cuda()
+        baseline = baseline.cuda()
         
         # forward
-        featuremap, mid_feats = net_encoder(input_img)
+        featuremap, mid_feats = net_encoder(imgs)
         seg_mask = net_decoder_1(featuremap)
         planar_masks = net_decoder_2(mid_feats, seg_mask)
         # warp 
+        img_recon = warp(imgs, planar_masks, disp, intrs, baseline) 
         
-        img_recon = warp(input_img, planar_masks, disp, intrs, baseline) 
-        
-        err = crit2(img_recon, view2_img)
+        err = crit2(img_recon, view2)
         
         return seg_mask, err
 
 
 def visualize(batch_data, pred, args):
     colors = loadmat('./colormap.mat')['colors']
-    (imgs, segs, view2, intrinsics, baseline, disp, infos) = batch_data
+    (imgs, segs, view2, intrs, baseline, disp, infos) = batch_data
     for j in range(len(infos)):
         # get/recover image
         # img = imread(os.path.join(args.root_img, infos[j]))
@@ -423,7 +417,7 @@ def main(args):
                for split in ('train', 'val')}
 
     # optional initial eval
-    evaluate(nets, loader_val, history, 0, args)
+    # evaluate(nets, loader_val, history, 0, args)
     for epoch in range(1, args.num_epoch + 1):
         train(nets, loader_train_sup, loader_train_unsup, optimizers, history, epoch, args)
 
@@ -492,7 +486,7 @@ if __name__ == '__main__':
                         help='number of images to evaluate')
     parser.add_argument('--num_class', default=19, type=int,
                         help='number of classes')
-    parser.add_argument('--num_plane', default=3, type=int,
+    parser.add_argument('--num_plane', default=100, type=int,
                         help='number of planes')
     parser.add_argument('--workers', default=4, type=int,
                         help='number of data loading workers')

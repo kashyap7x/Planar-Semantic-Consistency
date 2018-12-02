@@ -8,7 +8,7 @@ from torchvision import transforms
 from scipy.misc import imread, imresize
 from tqdm import tqdm
 from scipy.interpolate import RectBivariateSpline, interp2d
-
+import pdb
 
 trainID2Class = {
     0: 'road',
@@ -52,9 +52,8 @@ def make_CityScapes(mode, root):
     camera_suffix = '_camera.json'
     
     # disparity map
-    disp_path = img_path
+    disp_path = os.path.join(root, 'disp_trainvaltest', 'disp', mode)
     disp_suffix = '_leftImg8bit_disp.npy'
-    
 
     assert os.listdir(img_path) == os.listdir(mask_path)
     assert os.listdir(img_path) == os.listdir(view2_path)
@@ -66,11 +65,10 @@ def make_CityScapes(mode, root):
         c_items = [name.split(img_suffix)[0] for name in os.listdir(os.path.join(img_path, c))]
         for it in c_items:
             item = (os.path.join(img_path, c, it + img_suffix), 
-                    os.path.join(mask_path, c, it + mask_suffix), Normal
+                    os.path.join(mask_path, c, it + mask_suffix),
                     os.path.join(view2_path, c, it + view2_suffix), 
                     os.path.join(camera_path, c, it + camera_suffix),
-                    os.path.join(disp_path, c, it + disp_suffix)
-                    )
+                    os.path.join(disp_path, c, it + disp_suffix))
             items.append(item)
     return items
 
@@ -105,9 +103,7 @@ class CityScapes(torchdata.Dataset):
         yq = np.arange(0, h)
         xq = np.arange(0, w)
         arr_scale = spline.ev(yq[:,None], xq[None, :])
-
-
-
+        return arr_scale
     
     def _scale_and_crop(self, img, seg, view2, disp, cropSize, is_train):
         h_s, w_s = 720, 1440
@@ -144,7 +140,8 @@ class CityScapes(torchdata.Dataset):
 
     def __getitem__(self, index):
         img_path, seg_path, view2_path, cam_path, disp_path = self.list_sample[index]
-
+        
+        
         img = imread(img_path, mode='RGB')
         seg = imread(seg_path, mode='P')
         view2 = imread(view2_path, mode='RGB')
@@ -182,8 +179,9 @@ class CityScapes(torchdata.Dataset):
         image = torch.from_numpy(img)
         segmentation = torch.from_numpy(seg)
         view2 = torch.from_numpy(view2)
-        intrinsics = torch.from_numpy(intrinsics)
-        disp = torch.from_numpy(disp)
+        intrinsics = torch.from_numpy(intrinsics).type(torch.FloatTensor)
+        disp = torch.from_numpy(disp).type(torch.FloatTensor)
+        baseline = torch.from_numpy(np.array(baseline)).type(torch.FloatTensor)
         
         # normalize
         image = self.img_transform(image)
