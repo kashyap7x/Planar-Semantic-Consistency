@@ -111,17 +111,19 @@ class CityScapes(torchdata.Dataset):
         seg = (seg + 1).astype(np.uint8)
         seg_scale = imresize(seg, (h_s, w_s), interp='nearest')
         seg_scale = seg_scale.astype(np.int) - 1
-        view2_scale = imresize(view2, (h_s, w_s), interp='bilinear')
-        disp_scale = self._scale_npy(disp, h_s, w_s)
+        view2_scale = imresize(view2, (h_s//8, w_s//8), interp='bilinear')
+        disp_scale = self._scale_npy(disp, h_s//8, w_s//8)
         
         if is_train:
             # random crop
-            x1 = random.randint(0, w_s - cropSize)
-            y1 = random.randint(0, h_s - cropSize)
+            x1_8 = random.randint(0, (w_s - cropSize)//8)
+            y1_8 = random.randint(0, (h_s - cropSize)//8)
+            x1 = x1_8 * 8
+            y1 = y1_8 * 8
             img_crop = img_scale[y1: y1 + cropSize, x1: x1 + cropSize, :]
             seg_crop = seg_scale[y1: y1 + cropSize, x1: x1 + cropSize]
-            view2_crop = view2_scale[y1: y1 + cropSize, x1: x1 + cropSize, :]
-            disp_crop = disp_scale[y1: y1 + cropSize, x1: x1 + cropSize]
+            view2_crop = view2_scale[y1_8: y1_8 + cropSize//8, x1_8: x1_8 + cropSize//8, :]
+            disp_crop = disp_scale[y1_8: y1_8 + cropSize//8, x1_8: x1_8 + cropSize//8]
         else:
             # no crop
             img_crop = img_scale

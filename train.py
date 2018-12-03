@@ -40,7 +40,7 @@ def forward_with_loss(nets, batch_data, use_seg_label=True):
         
         err = crit1(seg_mask, segs)
         
-        return seg_mask, err
+        img_recon = view2
         
     else: # unsupervised training
         
@@ -58,35 +58,35 @@ def forward_with_loss(nets, batch_data, use_seg_label=True):
         
         err = crit2(img_recon, view2)
         
-        return seg_mask, err
+    mask_size = seg_mask.size()
+    seg_mask = nn.functional.upsample(seg_mask, size=(mask_size[2]*8, mask_size[3]*8), mode='bilinear')
+    seg_mask = nn.functional.log_softmax(seg_mask, dim=1)
+    
+    return seg_mask, img_recon, err
 
 
-def visualize(batch_data, pred, args):
-    colors = loadmat('./colormap.mat')['colors']
+def visualize_recon(batch_data, recons, epoch, args):
     (imgs, segs, view2, intrs, baseline, disp, infos) = batch_data
+
     for j in range(len(infos)):
-        # get/recover image
-        # img = imread(os.path.join(args.root_img, infos[j]))
-        img = imgs[j].clone()
+        img = view2[j].clone()
         for t, m, s in zip(img,
                            [0.485, 0.456, 0.406],
                            [0.229, 0.224, 0.225]):
             t.mul_(s).add_(m)
         img = (img.numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)
 
-        # segmentation
-        lab = segs[j].numpy()
-        lab_color = colorEncode(lab, colors)
+        recon = recons[j].clone()
+        for t, m, s in zip(recon,
+                           [0.485, 0.456, 0.406],
+                           [0.229, 0.224, 0.225]):
+            t.mul_(s).add_(m)
+        recon = (recon.cpu().detach().numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)
 
-        # prediction
-        pred_ = np.argmax(pred.data.cpu()[j].numpy(), axis=0)
-        pred_color = colorEncode(pred_, colors)
-
-        # aggregate images and save
-        im_vis = np.concatenate((img, lab_color, pred_color),
+        im_vis = np.concatenate((img, recon),
                                 axis=1).astype(np.uint8)
         imsave(os.path.join(args.vis,
-                            infos[j].replace('/', '_')), im_vis)
+                            str(epoch)+'_'+infos[j].replace('/', '_')), im_vis)
 
 
 # train one epoch
@@ -109,7 +109,7 @@ def train(nets, loader_sup, loader_unsup, optimizers, history, epoch, args):
             net.zero_grad()
 
         # forward pass
-        pred, err = forward_with_loss(nets, batch_data, use_seg_label=False)
+        pred, recons, err = forward_with_loss(nets, batch_data, use_seg_label=False)
 
         # Backward
         err.backward()
@@ -133,6 +133,8 @@ def train(nets, loader_sup, loader_unsup, optimizers, history, epoch, args):
                           args.lr_encoder, args.lr_decoder,
                           acc * 100, err.data.item()))
                   
+            visualize_recon(batch_data, recons, epoch, args)
+                  
     # main supervised loop
     for iteration in range(args.gamma):
         tic = time.time()
@@ -143,7 +145,7 @@ def train(nets, loader_sup, loader_unsup, optimizers, history, epoch, args):
                 net.zero_grad()
 
             # forward pass
-            pred, err = forward_with_loss(nets, batch_data, use_seg_label=True)
+            pred, _, err = forward_with_loss(nets, batch_data, use_seg_label=True)
             err = args.beta * err
             
             # Backward
@@ -186,7 +188,7 @@ def evaluate(nets, loader, history, epoch, args):
 
     for i, batch_data in enumerate(loader):
         # forward pass
-        pred, err = forward_with_loss(nets, batch_data, use_seg_label=True)
+        pred, _, err = forward_with_loss(nets, batch_data, use_seg_label=True)
         loss_meter.update(err.data.item())
         print('[Eval] iter {}, loss: {}'.format(i, err.data.item()))
 
@@ -201,7 +203,7 @@ def evaluate(nets, loader, history, epoch, args):
 
         # visualization
         visualize(batch_data, pred, args)
-
+        
     iou = intersection_meter.sum / (union_meter.sum + 1e-10)
     for i, _iou in enumerate(iou):
         print('class [{}], IoU: {}'.format(trainID2Class[i], _iou))
@@ -352,7 +354,7 @@ def main(args):
     # Network Builders
     builder = ModelBuilder()
     net_encoder = builder.build_encoder(weights=args.weights_encoder)
-    net_decoder_1 = builder.build_decoder(weights=args.weights_decoder)
+    net_decoder_1 = builder.build_decoder(weights=args.weights_decoder, use_softmax=False)
     net_decoder_2 = builder.build_decoder(arch='c1',num_class=args.num_class,
                                           num_plane=args.num_plane, use_softmax=False,
                                           weights=args.weights_plane_net)
@@ -486,7 +488,7 @@ if __name__ == '__main__':
                         help='number of images to evaluate')
     parser.add_argument('--num_class', default=19, type=int,
                         help='number of classes')
-    parser.add_argument('--num_plane', default=15, type=int,
+    parser.add_argument('--num_plane', default=100, type=int,
                         help='number of planes')
     parser.add_argument('--workers', default=4, type=int,
                         help='number of data loading workers')
@@ -499,7 +501,7 @@ if __name__ == '__main__':
                         help='folder to output checkpoints')
     parser.add_argument('--vis', default='./vis',
                         help='folder to output visualization during training')
-    parser.add_argument('--disp_iter', type=int, default=20,
+    parser.add_argument('--disp_iter', type=int, default=100,
                         help='frequency to display')
     parser.add_argument('--eval_epoch', type=int, default=1,
                         help='frequency to evaluate')

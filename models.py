@@ -8,7 +8,8 @@ from lib.nn import SynchronizedBatchNorm2d
 class NovelViewHomography(nn.Module): # Actually warp in train.h
     def __init__(self):
         super(NovelViewHomography, self).__init__()
-
+        self.avgpool = nn.AvgPool2d(8, stride=8)
+        
     def forward(self, img, planar_masks, disp, intrs, baseline):
         """
         Args: img(bxcxhxw), planar_masks(bx1xhxw), depth(bx1xhxw), normal()
@@ -90,6 +91,9 @@ class NovelViewHomography(nn.Module): # Actually warp in train.h
         """
         b,m,_,_ = H.shape
         _,c,h,w = img.shape
+        h = h//8
+        w = w//8
+        img = self.avgpool(img)
         tx_img = torch.zeros(img.shape)
         img = img.unsqueeze(1).repeat(1,m,1,1,1).view(-1,c,h,w)
         H = H.view(-1,3,3)
@@ -248,7 +252,6 @@ class PPMDecoder(nn.Module):
         psp_out = torch.cat(psp_out, 1)
 
         x = self.conv_final(psp_out)
-        x = nn.functional.upsample(x, size=(input_size[2]*8, input_size[3]*8), mode='bilinear')
 
         if self.use_softmax:
             x = nn.functional.log_softmax(x, dim=1)
@@ -261,17 +264,13 @@ class C1Decoder(nn.Module):
         super(C1Decoder, self).__init__()
         self.use_softmax = use_softmax
         
-        self.avgpool = nn.AvgPool2d(8, stride=8)
-        
         # last conv
         self.conv_last = nn.Conv2d(64 + num_class, num_plane, 1, 1, 0)
 
     def forward(self, x, probs):
         input_size = x.size()
-        probs = self.avgpool(probs)
         x = self.conv_last(torch.cat([x,probs],1))
         
-        x = nn.functional.upsample(x, size=(input_size[2]*8, input_size[3]*8), mode='bilinear')
         if self.use_softmax:
             x = nn.functional.log_softmax(x, dim=1)
 
