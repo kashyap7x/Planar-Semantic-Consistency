@@ -38,6 +38,10 @@ def forward_with_loss(nets, batch_data, use_seg_label=True):
         featuremap, _ = net_encoder(imgs)
         seg_mask = net_decoder_1(featuremap)
         
+        mask_size = seg_mask.size()
+        seg_mask = nn.functional.upsample(seg_mask, size=(mask_size[2]*8, mask_size[3]*8), mode='bilinear')
+        seg_mask = nn.functional.log_softmax(seg_mask, dim=1)
+    
         err = crit1(seg_mask, segs)
         
         img_recon = view2
@@ -58,12 +62,40 @@ def forward_with_loss(nets, batch_data, use_seg_label=True):
         
         err = crit2(img_recon, view2)
         
-    mask_size = seg_mask.size()
-    seg_mask = nn.functional.upsample(seg_mask, size=(mask_size[2]*8, mask_size[3]*8), mode='bilinear')
-    seg_mask = nn.functional.log_softmax(seg_mask, dim=1)
+        mask_size = seg_mask.size()
+        seg_mask = nn.functional.upsample(seg_mask, size=(mask_size[2]*8, mask_size[3]*8), mode='bilinear')
+        seg_mask = nn.functional.log_softmax(seg_mask, dim=1)
     
     return seg_mask, img_recon, err
 
+
+def visualize(batch_data, pred, args):
+    colors = loadmat('colormap.mat')['colors']
+    (imgs, segs, view2, intrs, baseline, disp, infos) = batch_data
+    for j in range(len(infos)):
+        # get/recover image
+        # img = imread(os.path.join(args.root_img, infos[j]))
+        img = imgs[j,:3,:,:].clone()
+        for t, m, s in zip(img,
+                           [0.485, 0.456, 0.406],
+                           [0.229, 0.224, 0.225]):
+            t.mul_(s).add_(m)
+        img = (img.numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)
+
+        # segmentation
+        lab = segs[j].numpy()
+        lab_color = colorEncode(lab, colors)
+
+        # prediction
+        pred_ = np.argmax(pred.data.cpu()[j].numpy(), axis=0)
+        pred_color = colorEncode(pred_, colors)
+
+        # aggregate images and save
+        im_vis = np.concatenate((img, lab_color, pred_color),
+                                axis=1).astype(np.uint8)
+        imsave(os.path.join(args.vis,
+                            infos[j].replace('/', '_')), im_vis)
+        
 
 def visualize_recon(batch_data, recons, epoch, args):
     (imgs, segs, view2, intrs, baseline, disp, infos) = batch_data
@@ -86,7 +118,7 @@ def visualize_recon(batch_data, recons, epoch, args):
         im_vis = np.concatenate((img, recon),
                                 axis=1).astype(np.uint8)
         imsave(os.path.join(args.vis,
-                            str(epoch)+'_'+infos[j].replace('/', '_')), im_vis)
+                            str(epoch)+infos[j].replace('/', '_')), im_vis)
 
 
 # train one epoch
@@ -467,10 +499,10 @@ if __name__ == '__main__':
 
     parser.add_argument('--optim', default='SGD', help='optimizer')
     parser.add_argument('--lr_encoder', default=1e-3, type=float, help='LR')
-    parser.add_argument('--lr_decoder', default=1e-3, type=float, help='LR')
+    parser.add_argument('--lr_decoder', default=1e-2, type=float, help='LR')
     parser.add_argument('--lr_pow', default=0.9, type=float,
                         help='power in poly to drop LR')
-    parser.add_argument('--gamma', default=5, type=float,
+    parser.add_argument('--gamma', default=20, type=float,
                         help='number of repetitions of supervised training per epoch')
     parser.add_argument('--beta', default=1, type=float,
                         help='relative weight of the supervised loss')
@@ -482,7 +514,7 @@ if __name__ == '__main__':
                         help='fix bn params')
 
     # Data related arguments
-    parser.add_argument('--num_sup', default=100, type=int,
+    parser.add_argument('--num_sup', default=50, type=int,
                         help='number of images for supervised training')
     parser.add_argument('--num_val', default=50, type=int,
                         help='number of images to evaluate')

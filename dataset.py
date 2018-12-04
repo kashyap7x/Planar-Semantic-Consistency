@@ -187,7 +187,8 @@ class CityScapes(torchdata.Dataset):
         
         # normalize
         image = self.img_transform(image)
-
+        view2 = self.img_transform(view2)
+        
         return image, segmentation.long(), view2, intrinsics, baseline, disp, img_path
 
     def __len__(self):
