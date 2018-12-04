@@ -69,8 +69,10 @@ def forward_with_loss(nets, batch_data, use_seg_label=True):
     return seg_mask, img_recon, err
 
 
-def visualize(batch_data, pred, args):
+def visualize(batch_data, pred, planar_masks, args):
     colors = loadmat('colormap.mat')['colors']
+    _, c, _, _ = planar_masks  
+    colors_pl = np.randint(0,255,[c,3])
     (imgs, segs, view2, intrs, baseline, disp, infos) = batch_data
     for j in range(len(infos)):
         # get/recover image
@@ -86,12 +88,17 @@ def visualize(batch_data, pred, args):
         lab = segs[j].numpy()
         lab_color = colorEncode(lab, colors)
 
+        # planar masks
+        pl_mask = planar_masks[j].numpy()
+        pl_color = colorEncode(pl_mask, colors_pl)
+
+
         # prediction
         pred_ = np.argmax(pred.data.cpu()[j].numpy(), axis=0)
         pred_color = colorEncode(pred_, colors)
 
         # aggregate images and save
-        im_vis = np.concatenate((img, lab_color, pred_color),
+        im_vis = np.concatenate((img, lab_color, pred_color, pl_color),
                                 axis=1).astype(np.uint8)
         imsave(os.path.join(args.vis,
                             infos[j].replace('/', '_')), im_vis)
