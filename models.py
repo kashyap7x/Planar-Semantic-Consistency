@@ -201,13 +201,17 @@ class ResnetEncoder(nn.Module):
                     m.padding = (dilate, dilate)
 
     def forward(self, x):
+        y = self.maxpool(x)
+        y = self.maxpool(y)
+        y = self.maxpool(y)
+        
         x = self.relu1(self.bn1(self.conv1(x)))
         x = self.relu2(self.bn2(self.conv2(x)))
         x = self.relu3(self.bn3(self.conv3(x)))
         x = self.maxpool(x)
 
         x = self.layer1(x)
-        y = self.maxpool(x)
+        #y = self.maxpool(x)
         
         x = self.layer2(x)
         x = self.layer3(x)
@@ -265,7 +269,7 @@ class C1Decoder(nn.Module):
         self.use_softmax = use_softmax
         
         # last conv
-        self.conv_last = nn.Conv2d(64 + num_class, num_plane, 1, 1, 0)
+        self.conv_last = nn.Conv2d(3 + num_class, num_plane, 1, 1, 0)
 
     def forward(self, x, probs):
         input_size = x.size()

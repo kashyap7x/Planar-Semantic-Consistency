@@ -35,8 +35,9 @@ def forward_with_loss(nets, batch_data, use_seg_label=True):
         segs = segs.cuda()
         
         # forward
-        featuremap, _ = net_encoder(imgs)
+        featuremap, mid_feats = net_encoder(imgs)
         seg_mask = net_decoder_1(featuremap)
+        planar_masks = net_decoder_2(mid_feats, seg_mask)
         
         mask_size = seg_mask.size()
         seg_mask = nn.functional.upsample(seg_mask, size=(mask_size[2]*8, mask_size[3]*8), mode='bilinear')
@@ -66,13 +67,14 @@ def forward_with_loss(nets, batch_data, use_seg_label=True):
         seg_mask = nn.functional.upsample(seg_mask, size=(mask_size[2]*8, mask_size[3]*8), mode='bilinear')
         seg_mask = nn.functional.log_softmax(seg_mask, dim=1)
     
-    return seg_mask, img_recon, err
+    return seg_mask, planar_masks, img_recon, err
 
 
-def visualize(batch_data, pred, planar_masks, args):
+def visualize_masks(batch_data, pred, planar_masks, epoch, args):
     colors = loadmat('colormap.mat')['colors']
-    _, c, _, _ = planar_masks  
-    colors_pl = np.randint(0,255,[c,3])
+    _, c, h, w = planar_masks.shape  
+    colors_pl = np.random.randint(0,255,[c,3]).astype(np.uint8)
+    
     (imgs, segs, view2, intrs, baseline, disp, infos) = batch_data
     for j in range(len(infos)):
         # get/recover image
@@ -89,19 +91,22 @@ def visualize(batch_data, pred, planar_masks, args):
         lab_color = colorEncode(lab, colors)
 
         # planar masks
-        pl_mask = planar_masks[j].numpy()
+        pl_mask = np.argmax(planar_masks.data.cpu()[j].numpy(), axis=0)
         pl_color = colorEncode(pl_mask, colors_pl)
-
 
         # prediction
         pred_ = np.argmax(pred.data.cpu()[j].numpy(), axis=0)
         pred_color = colorEncode(pred_, colors)
-
+        
+        img = imresize(img, (h,w), interp='bilinear')
+        lab_color = imresize(lab_color, (h,w), interp='bilinear')
+        pred_color = imresize(pred_color, (h,w), interp='bilinear')
+        
         # aggregate images and save
         im_vis = np.concatenate((img, lab_color, pred_color, pl_color),
                                 axis=1).astype(np.uint8)
         imsave(os.path.join(args.vis,
-                            infos[j].replace('/', '_')), im_vis)
+                            str(epoch)+"_seg"+infos[j].replace('/', '_')), im_vis)
         
 
 def visualize_recon(batch_data, recons, epoch, args):
@@ -148,7 +153,7 @@ def train(nets, loader_sup, loader_unsup, optimizers, history, epoch, args):
             net.zero_grad()
 
         # forward pass
-        pred, recons, err = forward_with_loss(nets, batch_data, use_seg_label=False)
+        pred, planes, recons, err = forward_with_loss(nets, batch_data, use_seg_label=False)
 
         # Backward
         err.backward()
@@ -173,7 +178,8 @@ def train(nets, loader_sup, loader_unsup, optimizers, history, epoch, args):
                           acc * 100, err.data.item()))
                   
             visualize_recon(batch_data, recons, epoch, args)
-                  
+            visualize_masks(batch_data, pred, planes, epoch, args)
+            
     # main supervised loop
     for iteration in range(args.gamma):
         tic = time.time()
@@ -184,7 +190,7 @@ def train(nets, loader_sup, loader_unsup, optimizers, history, epoch, args):
                 net.zero_grad()
 
             # forward pass
-            pred, _, err = forward_with_loss(nets, batch_data, use_seg_label=True)
+            pred, _, _, err = forward_with_loss(nets, batch_data, use_seg_label=True)
             err = args.beta * err
             
             # Backward
@@ -227,7 +233,7 @@ def evaluate(nets, loader, history, epoch, args):
 
     for i, batch_data in enumerate(loader):
         # forward pass
-        pred, _, err = forward_with_loss(nets, batch_data, use_seg_label=True)
+        pred, _, _, err = forward_with_loss(nets, batch_data, use_seg_label=True)
         loss_meter.update(err.data.item())
         print('[Eval] iter {}, loss: {}'.format(i, err.data.item()))
 
@@ -241,7 +247,7 @@ def evaluate(nets, loader, history, epoch, args):
         union_meter.update(union)
 
         # visualization
-        visualize(batch_data, pred, args)
+        # visualize(batch_data, pred, args)
         
     iou = intersection_meter.sum / (union_meter.sum + 1e-10)
     for i, _iou in enumerate(iou):
@@ -478,7 +484,7 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # Model related arguments
-    parser.add_argument('--id', default='warp',
+    parser.add_argument('--id', default='warp_rgb',
                         help="a name for identifying the experiment")
     parser.add_argument('--weights_encoder',
                         default='/home/selfdriving/kchitta/Style-Randomization/pretrained/encoder_cityscapes.pth',
@@ -527,7 +533,7 @@ if __name__ == '__main__':
                         help='number of images to evaluate')
     parser.add_argument('--num_class', default=19, type=int,
                         help='number of classes')
-    parser.add_argument('--num_plane', default=100, type=int,
+    parser.add_argument('--num_plane', default=32, type=int,
                         help='number of planes')
     parser.add_argument('--workers', default=4, type=int,
                         help='number of data loading workers')
@@ -540,7 +546,7 @@ if __name__ == '__main__':
                         help='folder to output checkpoints')
     parser.add_argument('--vis', default='./vis',
                         help='folder to output visualization during training')
-    parser.add_argument('--disp_iter', type=int, default=100,
+    parser.add_argument('--disp_iter', type=int, default=200,
                         help='frequency to display')
     parser.add_argument('--eval_epoch', type=int, default=1,
                         help='frequency to evaluate')
