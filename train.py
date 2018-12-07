@@ -28,49 +28,34 @@ def forward_with_loss(nets, batch_data, use_seg_label=True):
     (imgs, segs, view2, intrs, baseline, disp, infos) = batch_data
 
     imgs = imgs.cuda()    
+    view2 = view2.cuda()
+    intrs = intrs.cuda()
+    disp = disp.cuda()
+    baseline = baseline.cuda()
     
-    # feed input data
+    # forward
+    featuremap, mid_feats = net_encoder(imgs)
+    seg_mask = net_decoder_1(featuremap)
+    planar_masks = net_decoder_2(mid_feats, seg_mask)
+    # warp 
+    img_recon = warp(imgs, planar_masks, disp, intrs, baseline) 
+    
+    mask_size = seg_mask.size()
+    seg_mask = nn.functional.upsample(seg_mask, size=(mask_size[2]*8, mask_size[3]*8), mode='bilinear')
+    seg_mask = nn.functional.log_softmax(seg_mask, dim=1)
+        
+    # loss
     if use_seg_label: # supervised training
-        
         segs = segs.cuda()
-        
-        # forward
-        featuremap, mid_feats = net_encoder(imgs)
-        seg_mask = net_decoder_1(featuremap)
-        planar_masks = net_decoder_2(mid_feats, seg_mask)
-        
-        mask_size = seg_mask.size()
-        seg_mask = nn.functional.upsample(seg_mask, size=(mask_size[2]*8, mask_size[3]*8), mode='bilinear')
-        seg_mask = nn.functional.log_softmax(seg_mask, dim=1)
-    
         err = crit1(seg_mask, segs)
         
-        img_recon = view2
-        
     else: # unsupervised training
-        
-        view2 = view2.cuda()
-        intrs = intrs.cuda()
-        disp = disp.cuda()
-        baseline = baseline.cuda()
-        
-        # forward
-        featuremap, mid_feats = net_encoder(imgs)
-        seg_mask = net_decoder_1(featuremap)
-        planar_masks = net_decoder_2(mid_feats, seg_mask)
-        # warp 
-        img_recon = warp(imgs, planar_masks, disp, intrs, baseline) 
-        
         err = crit2(img_recon, view2)
-        
-        mask_size = seg_mask.size()
-        seg_mask = nn.functional.upsample(seg_mask, size=(mask_size[2]*8, mask_size[3]*8), mode='bilinear')
-        seg_mask = nn.functional.log_softmax(seg_mask, dim=1)
     
     return seg_mask, planar_masks, img_recon, err
 
 
-def visualize_masks(batch_data, pred, planar_masks, epoch, args):
+def visualize_masks(batch_data, pred, planar_masks, recons, epoch, args):
     colors = loadmat('colormap.mat')['colors']
     _, c, h, w = planar_masks.shape  
     colors_pl = np.random.randint(0,255,[c,3]).astype(np.uint8)
@@ -85,7 +70,14 @@ def visualize_masks(batch_data, pred, planar_masks, epoch, args):
                            [0.229, 0.224, 0.225]):
             t.mul_(s).add_(m)
         img = (img.numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)
-
+        
+        view = view2[j].clone()
+        for t, m, s in zip(view,
+                           [0.485, 0.456, 0.406],
+                           [0.229, 0.224, 0.225]):
+            t.mul_(s).add_(m)
+        view = (view.numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)
+        
         # segmentation
         lab = segs[j].numpy()
         lab_color = colorEncode(lab, colors)
@@ -102,35 +94,18 @@ def visualize_masks(batch_data, pred, planar_masks, epoch, args):
         lab_color = imresize(lab_color, (h,w), interp='bilinear')
         pred_color = imresize(pred_color, (h,w), interp='bilinear')
         
-        # aggregate images and save
-        im_vis = np.concatenate((img, lab_color, pred_color, pl_color),
-                                axis=1).astype(np.uint8)
-        imsave(os.path.join(args.vis,
-                            str(epoch)+"_seg"+infos[j].replace('/', '_')), im_vis)
-        
-
-def visualize_recon(batch_data, recons, epoch, args):
-    (imgs, segs, view2, intrs, baseline, disp, infos) = batch_data
-
-    for j in range(len(infos)):
-        img = view2[j].clone()
-        for t, m, s in zip(img,
-                           [0.485, 0.456, 0.406],
-                           [0.229, 0.224, 0.225]):
-            t.mul_(s).add_(m)
-        img = (img.numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)
-
         recon = recons[j].clone()
         for t, m, s in zip(recon,
                            [0.485, 0.456, 0.406],
                            [0.229, 0.224, 0.225]):
             t.mul_(s).add_(m)
         recon = (recon.cpu().detach().numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)
-
-        im_vis = np.concatenate((img, recon),
+        
+        # aggregate images and save
+        im_vis = np.concatenate((img, lab_color, pred_color, pl_color, view, recon),
                                 axis=1).astype(np.uint8)
         imsave(os.path.join(args.vis,
-                            str(epoch)+infos[j].replace('/', '_')), im_vis)
+                            str(epoch)+"_seg"+infos[j].replace('/', '_')), im_vis)
 
 
 # train one epoch
@@ -176,9 +151,8 @@ def train(nets, loader_sup, loader_unsup, optimizers, history, epoch, args):
                           batch_time.average(), data_time.average(),
                           args.lr_encoder, args.lr_decoder,
                           acc * 100, err.data.item()))
-                  
-            visualize_recon(batch_data, recons, epoch, args)
-            visualize_masks(batch_data, pred, planes, epoch, args)
+
+            visualize_masks(batch_data, pred, planes, recons, epoch, args)
             
     # main supervised loop
     for iteration in range(args.gamma):
@@ -233,7 +207,7 @@ def evaluate(nets, loader, history, epoch, args):
 
     for i, batch_data in enumerate(loader):
         # forward pass
-        pred, _, _, err = forward_with_loss(nets, batch_data, use_seg_label=True)
+        pred, planes, recons, err = forward_with_loss(nets, batch_data, use_seg_label=True)
         loss_meter.update(err.data.item())
         print('[Eval] iter {}, loss: {}'.format(i, err.data.item()))
 
@@ -247,7 +221,7 @@ def evaluate(nets, loader, history, epoch, args):
         union_meter.update(union)
 
         # visualization
-        # visualize(batch_data, pred, args)
+        visualize_masks(batch_data, pred, planes, recons, 'val_'+str(epoch), args)
         
     iou = intersection_meter.sum / (union_meter.sum + 1e-10)
     for i, _iou in enumerate(iou):
@@ -464,7 +438,7 @@ def main(args):
                for split in ('train', 'val')}
 
     # optional initial eval
-    # evaluate(nets, loader_val, history, 0, args)
+    evaluate(nets, loader_val, history, 0, args)
     for epoch in range(1, args.num_epoch + 1):
         train(nets, loader_train_sup, loader_train_unsup, optimizers, history, epoch, args)
 
@@ -533,7 +507,7 @@ if __name__ == '__main__':
                         help='number of images to evaluate')
     parser.add_argument('--num_class', default=19, type=int,
                         help='number of classes')
-    parser.add_argument('--num_plane', default=32, type=int,
+    parser.add_argument('--num_plane', default=256, type=int,
                         help='number of planes')
     parser.add_argument('--workers', default=4, type=int,
                         help='number of data loading workers')
