@@ -48,14 +48,14 @@ def forward_with_loss(nets, batch_data, use_seg_label=True):
     # loss
     if use_seg_label: # supervised training
         segs = segs.cuda()
-        err = crit1(seg_mask, segs)
+        err_ce = crit1(seg_mask, segs)
         
     else: # unsupervised training
         err_ce = crit2(img_recon, view2)
-        err_planar = planar_smoothness_loss(planar_masks, imgs)
-        err = err_ce + err_planar
+        
+    err_planar = planar_smoothness_loss(planar_masks, imgs)
+    err = err_ce + args.eta * err_planar
 
-    
     return seg_mask, planar_masks, img_recon, err, err_ce, err_planar
 
 def tensor_grad(tensor, kernel):
@@ -178,13 +178,13 @@ def train(nets, loader_sup, loader_unsup, optimizers, history, epoch, args):
         if i % args.disp_iter == 0:
             acc, _ = accuracy(batch_data, pred)
 
-            print('Epoch: [{}][{}/{}][Unsup], Time: {:.2f}, Data: {:.2f}, '
-                  'lr_encoder: {}, lr_decoder: {}, '
-                  'Accuracy: {:4.2f}%, Loss: {}'
-                  .format(epoch, i, args.epoch_iters,
-                          batch_time.average(), data_time.average(),
-                          args.lr_encoder, args.lr_decoder,
-                          acc * 100, err.data.item()))
+            print('Epoch: [{}][{}/{}][Sup], Time: {:.2f}, Data: {:.2f}, '
+                    'lr_encoder: {}, lr_decoder: {}, '
+                    'Accuracy: {:4.2f}%, Loss: {:.4f}, CE_Loss: {:.4f}, Planar_Loss: {:.4f}, '
+                    .format(epoch, i, args.epoch_iters,
+                            batch_time.average(), data_time.average(),
+                            args.lr_encoder, args.lr_decoder,
+                            acc * 100, err.data.item(), err_ce.data.item(), err_planar.data.item()))
 
             visualize_masks(batch_data, pred, planes, recons, epoch, args)
             
@@ -495,13 +495,13 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # Model related arguments
-    parser.add_argument('--id', default='warp_rgb',
+    parser.add_argument('--id', default='warp_rgb_smooth',
                         help="a name for identifying the experiment")
     parser.add_argument('--weights_encoder',
-                        default='/home/shashant/geometry_project/Planar-Semantic-Consistency/pretrained/encoder_cityscapes.pth',
+                        default='/home/selfdriving/kchitta/Style-Randomization/pretrained/encoder_cityscapes.pth',
                         help="weights to initialize encoder")
     parser.add_argument('--weights_decoder',
-                        default='/home/shashant/geometry_project/Planar-Semantic-Consistency/pretrained/decoder_1_cityscapes.pth',
+                        default='/home/selfdriving/kchitta/Style-Randomization/pretrained/decoder_1_cityscapes.pth',
                         help="weights to initialize segmentation branch")
     parser.add_argument('--weights_plane_net',
                         default='',
@@ -509,10 +509,10 @@ if __name__ == '__main__':
 
     # Path related arguments
     parser.add_argument('--root_cityscapes',
-                        default='/media/hdd1/datasets/CityScapes')
+                        default='/home/selfdriving/datasets/cityscapes_full')
 
     # optimization related arguments
-    parser.add_argument('--num_gpus', default=1, type=int,
+    parser.add_argument('--num_gpus', default=3, type=int,
                         help='number of gpus to use')
     parser.add_argument('--batch_size_per_gpu', default=3, type=int,
                         help='input batch size')
@@ -530,6 +530,8 @@ if __name__ == '__main__':
                         help='number of repetitions of supervised training per epoch')
     parser.add_argument('--beta', default=1, type=float,
                         help='relative weight of the supervised loss')
+    parser.add_argument('--eta', default=1, type=float,
+                        help='relative weight of the gradient loss')
     parser.add_argument('--beta1', default=0.9, type=float,
                         help='momentum for sgd, beta1 for adam')
     parser.add_argument('--weight_decay', default=1e-4, type=float,
