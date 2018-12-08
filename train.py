@@ -8,6 +8,8 @@ import argparse
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.nn import functional as F
+
 from torch.autograd import Variable
 from scipy.io import loadmat
 from scipy.misc import imresize, imsave
@@ -16,11 +18,10 @@ from dataset import CityScapes, trainID2Class
 from models import ModelBuilder, NovelViewHomography
 from utils import AverageMeter, colorEncode, accuracy, make_variable, intersectionAndUnion
 
-import matplotlib
+import matplotlib, pdb
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-
 
 def forward_with_loss(nets, batch_data, use_seg_label=True):
     (net_encoder, net_decoder_1, net_decoder_2, warp, crit1, crit2) = nets
@@ -50,9 +51,42 @@ def forward_with_loss(nets, batch_data, use_seg_label=True):
         err = crit1(seg_mask, segs)
         
     else: # unsupervised training
-        err = crit2(img_recon, view2)
+        err_ce = crit2(img_recon, view2)
+        err_planar = planar_smoothness_loss(planar_masks, imgs)
+        err = err_ce + err_planar
+
     
-    return seg_mask, planar_masks, img_recon, err
+    return seg_mask, planar_masks, img_recon, err, err_ce, err_planar
+
+def tensor_grad(tensor, kernel):
+    b,c,_,_ = tensor.shape
+    kernel = kernel.repeat(1,c,1,1)
+    tensor_grad = F.conv2d(tensor, kernel, stride=1, padding=1)
+    return tensor_grad
+
+def get_gradients_xy(tensor):
+    sobelx = torch.FloatTensor([[0,0,0],[-0.5,0,0.5],[0,0,0]])
+    sobely = torch.t(sobelx)
+    sobelx_kernel = sobelx.unsqueeze(0).unsqueeze(0).cuda()
+    sobely_kernel = sobely.unsqueeze(0).unsqueeze(0).cuda()
+    gradx = tensor_grad(tensor, sobelx_kernel)
+    grady = tensor_grad(tensor, sobely_kernel)
+    return gradx, grady
+
+def planar_smoothness_loss(p_masks, imgs):
+    ## Check this implementation
+    p_masks_gradx, p_masks_grady = get_gradients_xy(p_masks)
+
+    imgs = F.avg_pool2d(imgs, 8, stride=8)
+    imgs_gradx, imgs_grady = get_gradients_xy(imgs)
+
+    weight_x = torch.exp(-torch.mean(torch.abs(imgs_gradx), 1, keepdim=True))
+    weight_y = torch.exp(-torch.mean(torch.abs(imgs_grady), 1, keepdim=True))
+    smoothness_x = p_masks_gradx*weight_x 
+    smoothness_y = p_masks_grady*weight_y
+    smoothness = smoothness_x + smoothness_y
+    loss = torch.mean(torch.abs(smoothness))
+    return loss
 
 
 def visualize_masks(batch_data, pred, planar_masks, recons, epoch, args):
@@ -128,7 +162,7 @@ def train(nets, loader_sup, loader_unsup, optimizers, history, epoch, args):
             net.zero_grad()
 
         # forward pass
-        pred, planes, recons, err = forward_with_loss(nets, batch_data, use_seg_label=False)
+        pred, planes, recons, err, err_ce, err_planar = forward_with_loss(nets, batch_data, use_seg_label=False)
 
         # Backward
         err.backward()
@@ -164,7 +198,7 @@ def train(nets, loader_sup, loader_unsup, optimizers, history, epoch, args):
                 net.zero_grad()
 
             # forward pass
-            pred, _, _, err = forward_with_loss(nets, batch_data, use_seg_label=True)
+            pred, _, _, err, err_ce, err_planar = forward_with_loss(nets, batch_data, use_seg_label=True)
             err = args.beta * err
             
             # Backward
@@ -183,11 +217,11 @@ def train(nets, loader_sup, loader_unsup, optimizers, history, epoch, args):
 
                 print('Epoch: [{}][{}/{}][Sup], Time: {:.2f}, Data: {:.2f}, '
                     'lr_encoder: {}, lr_decoder: {}, '
-                    'Accuracy: {:4.2f}%, Loss: {}'
+                    'Accuracy: {:4.2f}%, Loss: {:.4f}, CE_Loss: {:.4f}, Planar_Loss: {:.4f}, '
                     .format(epoch, i, args.epoch_iters,
                             batch_time.average(), data_time.average(),
                             args.lr_encoder, args.lr_decoder,
-                            acc * 100, err.data.item()))
+                            acc * 100, err.data.item(), err_ce.data.item(), err_planar.data.item()))
 
                 fractional_epoch = epoch - 1 + 1. * i / args.epoch_iters
                 history['train']['epoch'].append(fractional_epoch)
@@ -207,7 +241,7 @@ def evaluate(nets, loader, history, epoch, args):
 
     for i, batch_data in enumerate(loader):
         # forward pass
-        pred, planes, recons, err = forward_with_loss(nets, batch_data, use_seg_label=True)
+        pred, planes, recons, err, err_ce, err_planar = forward_with_loss(nets, batch_data, use_seg_label=True)
         loss_meter.update(err.data.item())
         print('[Eval] iter {}, loss: {}'.format(i, err.data.item()))
 
@@ -455,16 +489,19 @@ def main(args):
     print('Training Done!')
 
 
+
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # Model related arguments
     parser.add_argument('--id', default='warp_rgb',
                         help="a name for identifying the experiment")
     parser.add_argument('--weights_encoder',
-                        default='/home/selfdriving/kchitta/Style-Randomization/pretrained/encoder_cityscapes.pth',
+                        default='/home/shashant/geometry_project/Planar-Semantic-Consistency/pretrained/encoder_cityscapes.pth',
                         help="weights to initialize encoder")
     parser.add_argument('--weights_decoder',
-                        default='/home/selfdriving/kchitta/Style-Randomization/pretrained/decoder_1_cityscapes.pth',
+                        default='/home/shashant/geometry_project/Planar-Semantic-Consistency/pretrained/decoder_1_cityscapes.pth',
                         help="weights to initialize segmentation branch")
     parser.add_argument('--weights_plane_net',
                         default='',
@@ -472,10 +509,10 @@ if __name__ == '__main__':
 
     # Path related arguments
     parser.add_argument('--root_cityscapes',
-                        default='/home/selfdriving/datasets/cityscapes_full')
+                        default='/media/hdd1/datasets/CityScapes')
 
     # optimization related arguments
-    parser.add_argument('--num_gpus', default=3, type=int,
+    parser.add_argument('--num_gpus', default=1, type=int,
                         help='number of gpus to use')
     parser.add_argument('--batch_size_per_gpu', default=3, type=int,
                         help='input batch size')
