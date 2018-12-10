@@ -8,11 +8,8 @@ import argparse
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
 
 from torch.autograd import Variable
-from scipy.io import loadmat
-from scipy.misc import imresize, imsave
 # Our libs
 from dataset import CityScapes, trainID2Class
 from models import ModelBuilder, NovelViewHomography
@@ -442,7 +439,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr_decoder', default=1e-2, type=float, help='LR')
     parser.add_argument('--lr_pow', default=0.9, type=float,
                         help='power in poly to drop LR')
-    parser.add_argument('--gamma', default=20, type=float,
+    parser.add_argument('--gamma', default=10, type=float,
                         help='number of repetitions of supervised training per epoch')
     parser.add_argument('--beta', default=1, type=float,
                         help='relative weight of the supervised loss')
