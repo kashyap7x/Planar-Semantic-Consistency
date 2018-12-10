@@ -16,12 +16,13 @@ from scipy.misc import imresize, imsave
 # Our libs
 from dataset import CityScapes, trainID2Class
 from models import ModelBuilder, NovelViewHomography
-from utils import AverageMeter, colorEncode, accuracy, make_variable, intersectionAndUnion
+from utils import *
 
 import matplotlib, pdb
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+
 
 def forward_with_loss(nets, batch_data, use_seg_label=True):
     (net_encoder, net_decoder_1, net_decoder_2, warp, crit1, crit2) = nets
@@ -57,89 +58,6 @@ def forward_with_loss(nets, batch_data, use_seg_label=True):
     err = err_ce + args.eta * err_planar
 
     return seg_mask, planar_masks, img_recon, err, err_ce, err_planar
-
-def tensor_grad(tensor, kernel):
-    b,c,_,_ = tensor.shape
-    kernel = kernel.repeat(1,c,1,1)
-    tensor_grad = F.conv2d(tensor, kernel, stride=1, padding=1)
-    return tensor_grad
-
-def get_gradients_xy(tensor):
-    sobelx = torch.FloatTensor([[0,0,0],[-0.5,0,0.5],[0,0,0]])
-    sobely = torch.t(sobelx)
-    sobelx_kernel = sobelx.unsqueeze(0).unsqueeze(0).cuda()
-    sobely_kernel = sobely.unsqueeze(0).unsqueeze(0).cuda()
-    gradx = tensor_grad(tensor, sobelx_kernel)
-    grady = tensor_grad(tensor, sobely_kernel)
-    return gradx, grady
-
-def planar_smoothness_loss(p_masks, imgs):
-    ## Check this implementation
-    p_masks_gradx, p_masks_grady = get_gradients_xy(p_masks)
-
-    imgs = F.avg_pool2d(imgs, 8, stride=8)
-    imgs_gradx, imgs_grady = get_gradients_xy(imgs)
-
-    weight_x = torch.exp(-torch.mean(torch.abs(imgs_gradx), 1, keepdim=True))
-    weight_y = torch.exp(-torch.mean(torch.abs(imgs_grady), 1, keepdim=True))
-    smoothness_x = p_masks_gradx*weight_x 
-    smoothness_y = p_masks_grady*weight_y
-    smoothness = smoothness_x + smoothness_y
-    loss = torch.mean(torch.abs(smoothness))
-    return loss
-
-
-def visualize_masks(batch_data, pred, planar_masks, recons, epoch, args):
-    colors = loadmat('colormap.mat')['colors']
-    _, c, h, w = planar_masks.shape  
-    colors_pl = np.random.randint(0,255,[c,3]).astype(np.uint8)
-    
-    (imgs, segs, view2, intrs, baseline, disp, infos) = batch_data
-    for j in range(len(infos)):
-        # get/recover image
-        # img = imread(os.path.join(args.root_img, infos[j]))
-        img = imgs[j,:3,:,:].clone()
-        for t, m, s in zip(img,
-                           [0.485, 0.456, 0.406],
-                           [0.229, 0.224, 0.225]):
-            t.mul_(s).add_(m)
-        img = (img.numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)
-        
-        view = view2[j].clone()
-        for t, m, s in zip(view,
-                           [0.485, 0.456, 0.406],
-                           [0.229, 0.224, 0.225]):
-            t.mul_(s).add_(m)
-        view = (view.numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)
-        
-        # segmentation
-        lab = segs[j].numpy()
-        lab_color = colorEncode(lab, colors)
-
-        # planar masks
-        pl_mask = np.argmax(planar_masks.data.cpu()[j].numpy(), axis=0)
-        pl_color = colorEncode(pl_mask, colors_pl)
-
-        # prediction
-        pred_ = np.argmax(pred.data.cpu()[j].numpy(), axis=0)
-        pred_color = colorEncode(pred_, colors)
-        
-        img = imresize(img, (h,w), interp='bilinear')
-        lab_color = imresize(lab_color, (h,w), interp='bilinear')
-        pred_color = imresize(pred_color, (h,w), interp='bilinear')
-        
-        recon = recons[j].clone()
-        for t, m, s in zip(recon,
-                           [0.485, 0.456, 0.406],
-                           [0.229, 0.224, 0.225]):
-            t.mul_(s).add_(m)
-        recon = (recon.cpu().detach().numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)
-        
-        # aggregate images and save
-        im_vis = np.concatenate((img, lab_color, pred_color, pl_color, view, recon),
-                                axis=1).astype(np.uint8)
-        imsave(os.path.join(args.vis,
-                            str(epoch)+"_seg"+infos[j].replace('/', '_')), im_vis)
 
 
 # train one epoch
@@ -227,6 +145,7 @@ def train(nets, loader_sup, loader_unsup, optimizers, history, epoch, args):
                 history['train']['epoch'].append(fractional_epoch)
                 history['train']['err'].append(err.data.item())
                 history['train']['acc'].append(acc)
+
             
 def evaluate(nets, loader, history, epoch, args):
     print('Evaluating at {} epochs...'.format(epoch))
@@ -489,9 +408,6 @@ def main(args):
     print('Training Done!')
 
 
-
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # Model related arguments
@@ -530,7 +446,7 @@ if __name__ == '__main__':
                         help='number of repetitions of supervised training per epoch')
     parser.add_argument('--beta', default=1, type=float,
                         help='relative weight of the supervised loss')
-    parser.add_argument('--eta', default=1, type=float,
+    parser.add_argument('--eta', default=0.1, type=float,
                         help='relative weight of the gradient loss')
     parser.add_argument('--beta1', default=0.9, type=float,
                         help='momentum for sgd, beta1 for adam')
@@ -591,6 +507,7 @@ if __name__ == '__main__':
     args.id += '-epoch' + str(args.num_epoch)
     args.id += '-decay' + str(args.weight_decay)
     args.id += '-beta' + str(args.beta)
+    args.id += '-eta' + str(args.eta)
     args.id += '-plane' + str(args.num_plane)
     
     print('Model ID: {}'.format(args.id))

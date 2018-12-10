@@ -135,3 +135,89 @@ def make_variable(tensor, volatile=False):
     if torch.cuda.is_available():
         tensor = tensor.cuda()
     return Variable(tensor, volatile=volatile)
+
+
+def tensor_grad(tensor, kernel):
+    b,c,_,_ = tensor.shape
+    kernel = kernel.repeat(1,c,1,1)
+    tensor_grad = F.conv2d(tensor, kernel, stride=1, padding=1)
+    return tensor_grad
+
+
+def get_gradients_xy(tensor):
+    sobelx = torch.FloatTensor([[0,0,0],[-0.5,0,0.5],[0,0,0]])
+    sobely = torch.t(sobelx)
+    sobelx_kernel = sobelx.unsqueeze(0).unsqueeze(0).cuda()
+    sobely_kernel = sobely.unsqueeze(0).unsqueeze(0).cuda()
+    gradx = tensor_grad(tensor, sobelx_kernel)
+    grady = tensor_grad(tensor, sobely_kernel)
+    return gradx, grady
+
+
+def planar_smoothness_loss(p_masks, imgs):
+    ## Check this implementation
+    p_masks_gradx, p_masks_grady = get_gradients_xy(p_masks)
+
+    imgs = F.avg_pool2d(imgs, 8, stride=8)
+    imgs_gradx, imgs_grady = get_gradients_xy(imgs)
+
+    weight_x = torch.exp(-torch.mean(torch.abs(imgs_gradx), 1, keepdim=True))
+    weight_y = torch.exp(-torch.mean(torch.abs(imgs_grady), 1, keepdim=True))
+    smoothness_x = p_masks_gradx*weight_x 
+    smoothness_y = p_masks_grady*weight_y
+    smoothness = smoothness_x + smoothness_y
+    loss = torch.mean(torch.abs(smoothness))
+    return loss
+
+
+def visualize_masks(batch_data, pred, planar_masks, recons, epoch, args):
+    colors = loadmat('colormap.mat')['colors']
+    _, c, h, w = planar_masks.shape  
+    colors_pl = np.random.randint(0,255,[c,3]).astype(np.uint8)
+    
+    (imgs, segs, view2, intrs, baseline, disp, infos) = batch_data
+    for j in range(len(infos)):
+        # get/recover image
+        # img = imread(os.path.join(args.root_img, infos[j]))
+        img = imgs[j,:3,:,:].clone()
+        for t, m, s in zip(img,
+                           [0.485, 0.456, 0.406],
+                           [0.229, 0.224, 0.225]):
+            t.mul_(s).add_(m)
+        img = (img.numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)
+        
+        view = view2[j].clone()
+        for t, m, s in zip(view,
+                           [0.485, 0.456, 0.406],
+                           [0.229, 0.224, 0.225]):
+            t.mul_(s).add_(m)
+        view = (view.numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)
+        
+        # segmentation
+        lab = segs[j].numpy()
+        lab_color = colorEncode(lab, colors)
+
+        # planar masks
+        pl_mask = np.argmax(planar_masks.data.cpu()[j].numpy(), axis=0)
+        pl_color = colorEncode(pl_mask, colors_pl)
+
+        # prediction
+        pred_ = np.argmax(pred.data.cpu()[j].numpy(), axis=0)
+        pred_color = colorEncode(pred_, colors)
+        
+        img = imresize(img, (h,w), interp='bilinear')
+        lab_color = imresize(lab_color, (h,w), interp='bilinear')
+        pred_color = imresize(pred_color, (h,w), interp='bilinear')
+        
+        recon = recons[j].clone()
+        for t, m, s in zip(recon,
+                           [0.485, 0.456, 0.406],
+                           [0.229, 0.224, 0.225]):
+            t.mul_(s).add_(m)
+        recon = (recon.cpu().detach().numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)
+        
+        # aggregate images and save
+        im_vis = np.concatenate((img, lab_color, pred_color, pl_color, view, recon),
+                                axis=1).astype(np.uint8)
+        imsave(os.path.join(args.vis,
+                            str(epoch)+"_seg"+infos[j].replace('/', '_')), im_vis)

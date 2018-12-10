@@ -67,7 +67,6 @@ class NovelViewHomography(nn.Module): # Actually warp in train.h
         H = H.view(b,m,3,3)
         return H
     
-
     def b_inv(self, b_mat):
         eye = b_mat.new_ones(b_mat.size(-1)).diag().expand_as(b_mat)
         b_inv, _ = torch.gesv(eye, b_mat)

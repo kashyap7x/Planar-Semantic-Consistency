@@ -8,7 +8,7 @@ from torchvision import transforms
 from scipy.misc import imread, imresize
 from tqdm import tqdm
 from scipy.interpolate import RectBivariateSpline, interp2d
-import pdb
+
 
 trainID2Class = {
     0: 'road',
@@ -195,11 +195,8 @@ class CityScapes(torchdata.Dataset):
         return len(self.list_sample)
     
 
-def main():
-   
-    dataset = CityScapes('val', root='/home/selfdriving/datasets/cityscapes_full', max_sample = 32, is_train=0)
-    h_s, w_s = 720, 1440
-    
+def main():   
+    dataset = CityScapes('val', root='/home/selfdriving/datasets/cityscapes_full', max_sample = 32, is_train=0)  
     loader = torch.utils.data.DataLoader(
         dataset,
         batch_size=16,
@@ -209,5 +206,3 @@ def main():
     
     for batch_data in tqdm(loader):
         pass
-        
-#main()
